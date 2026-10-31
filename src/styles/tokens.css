@@ -1,0 +1,23 @@
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600&family=JetBrains+Mono:wght@400&display=swap');
+
+:root {
+  color-scheme: dark;
+  --ink: #0C1116;
+  --slate: #1B232B;
+  --grey: #5B6670;
+  --bone: #E9E6DF;
+  --accent: #FF6B3D;
+  --u: clamp(7px, 1vmin, 11px);
+  --cut: calc(var(--u) * 1.2);
+  --display: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  --mono: 'JetBrains Mono', monospace;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --hover-time: 140ms;
+  --press-time: 80ms;
+  --screen-time: 220ms;
+  --goal-time: 2.4s;
+  --target: 44px;
+  --hud-moving-opacity: 0.3;
+  --facet: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  --facet-hover: polygon(calc(var(--cut) * 1.5) 0, 100% 0, 100% calc(100% - var(--cut) * 1.5), calc(100% - var(--cut) * 1.5) 100%, 0 100%, 0 calc(var(--cut) * 1.5));
+}

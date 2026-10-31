@@ -1,0 +1,344 @@
+import { CONFIG, TAU, ease } from './config.js';
+import { createWorld, getAimTrajectory } from './physics.js';
+
+const C = CONFIG.palette;
+const V = CONFIG.render;
+const W = CONFIG.world;
+const M = CONFIG.motion;
+const AIM_DASH = [5, 5];
+
+function hexagon(ctx, radius) {
+  ctx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const angle = i * TAU / 6;
+    const x = Math.cos(angle) * radius;
+    const y = Math.sin(angle) * radius;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+}
+
+function polygon(ctx, points) {
+  ctx.beginPath();
+  ctx.moveTo(points[0][0], points[0][1]);
+  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+  ctx.closePath();
+}
+
+function segment(ctx, ax, ay, bx, by) {
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(bx, by);
+  ctx.stroke();
+}
+
+function drawWall(ctx, wall, progress, color) {
+  if (!wall.active || progress <= 0) return;
+  const bx = wall.ax + wall.dx * progress;
+  const by = wall.ay + wall.dy * progress;
+  ctx.strokeStyle = color;
+  if (wall.mat === 'rubber') {
+    ctx.lineWidth = V.rubberWidth;
+    const ox = wall.nx * V.rubberGap / 2;
+    const oy = wall.ny * V.rubberGap / 2;
+    segment(ctx, wall.ax + ox, wall.ay + oy, bx + ox, by + oy);
+    segment(ctx, wall.ax - ox, wall.ay - oy, bx - ox, by - oy);
+  } else if (wall.mat === 'glass') {
+    ctx.lineWidth = V.glassWidth;
+    segment(ctx, wall.ax, wall.ay, bx, by);
+    for (let distance = V.glassSpacing; distance < wall.length * progress; distance += V.glassSpacing) {
+      const x = wall.ax + wall.dx * distance / wall.length;
+      const y = wall.ay + wall.dy * distance / wall.length;
+      segment(ctx, x - wall.nx * V.glassTick / 2, y - wall.ny * V.glassTick / 2, x + wall.nx * V.glassTick / 2, y + wall.ny * V.glassTick / 2);
+    }
+  } else {
+    ctx.lineWidth = V.solidWidth;
+    segment(ctx, wall.ax, wall.ay, bx, by);
+  }
+}
+
+export class Renderer {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d', { alpha: false });
+    this.cache = document.createElement('canvas');
+    this.staticCtx = this.cache.getContext('2d');
+    this.titleWorld = createWorld(CONFIG.render.titleScene);
+    this.world = this.titleWorld;
+    this.mode = 'title';
+    this.width = 0;
+    this.height = 0;
+    this.scale = 1;
+    this.x = 0;
+    this.y = 0;
+    this.dpr = 1;
+    this.version = -1;
+    this.loadedAt = 0;
+    this.tracing = true;
+    this.reducedMotion = false;
+    this.goalX = 0;
+    this.goalY = 0;
+    this.pointerPoint = { x: 0, y: 0 };
+    this.setWorld(this.titleWorld, 'title', 0);
+  }
+
+  setWorld(world, mode, now) {
+    this.world = world;
+    this.mode = mode;
+    this.loadedAt = now;
+    this.ghosts = [];
+    this.lastGhostTime = -Infinity;
+    this.wonAt = null;
+    this.goalFlashed = false;
+    this.tracing = !this.reducedMotion;
+    this.goalX = 0;
+    this.goalY = 0;
+    for (let i = 0; i < world.goal.length; i++) {
+      this.goalX += world.goal[i][0] / world.goal.length;
+      this.goalY += world.goal[i][1] / world.goal.length;
+    }
+    this.resize();
+  }
+
+  resize() {
+    const rect = this.canvas.getBoundingClientRect();
+    this.width = rect.width;
+    this.height = rect.height;
+    this.left = rect.left;
+    this.top = rect.top;
+    this.dpr = Math.min(window.devicePixelRatio || 1, W.dprCap);
+    this.canvas.width = Math.round(this.width * this.dpr);
+    this.canvas.height = Math.round(this.height * this.dpr);
+    const L = CONFIG.layout;
+    const unit = Math.max(L.unitMin, Math.min(L.unitMax, Math.min(this.width, this.height) * L.unitVmin / 100));
+    if (this.mode === 'title') {
+      const mobile = this.width / this.height < L.portraitRatio;
+      this.scale = mobile
+        ? Math.min(this.width / W.width, this.height / W.height) * V.mobileTitleZoom
+        : Math.min(this.width * V.titleWidth / W.width, this.height * V.titleHeight / W.height) * V.titleZoom;
+      this.x = this.width * (mobile ? V.mobileTitleX : V.titleX) - W.width * this.scale / 2;
+      this.y = this.height * (mobile ? V.mobileTitleY : V.titleY) - W.height * this.scale / 2;
+    } else {
+      const portrait = this.width / this.height < L.portraitRatio;
+      const side = (portrait ? L.mobileSideUnits : L.sideUnits) * unit;
+      const top = (portrait ? L.mobileTopUnits : L.topUnits) * unit;
+      const bottom = (portrait ? L.mobileBottomUnits : L.bottomUnits) * unit;
+      this.scale = Math.max(CONFIG.physics.epsilon, Math.min((this.width - side * 2) / W.width, (this.height - top - bottom) / W.height));
+      this.x = (this.width - W.width * this.scale) / 2;
+      this.y = top + (this.height - top - bottom - W.height * this.scale) / 2;
+    }
+    this.cache.width = Math.ceil(W.width * this.scale * this.dpr);
+    this.cache.height = Math.ceil(W.height * this.scale * this.dpr);
+    this.buildCache();
+  }
+
+  buildCache() {
+    const ctx = this.staticCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.cache.width, this.cache.height);
+    // Compensate for integer backing sizes so cached and dynamic geometry align.
+    ctx.setTransform(this.cache.width / W.width, 0, 0, this.cache.height / W.height, 0, 0);
+    const world = this.world;
+    for (let i = 0; i < world.hazards.length; i++) {
+      const hazard = world.hazards[i];
+      ctx.save();
+      polygon(ctx, hazard);
+      ctx.clip();
+      ctx.fillStyle = C.slate;
+      ctx.fillRect(0, 0, W.width, W.height);
+      ctx.strokeStyle = C.grey;
+      ctx.globalAlpha = V.hatchOpacity;
+      ctx.lineWidth = V.hatchWidth;
+      for (let x = -W.height; x < W.width; x += V.hatchSpacing) segment(ctx, x, W.height, x + W.height, 0);
+      ctx.restore();
+      ctx.strokeStyle = C.grey;
+      ctx.lineWidth = V.hatchWidth;
+      polygon(ctx, hazard);
+      ctx.stroke();
+    }
+    polygon(ctx, world.goal);
+    ctx.fillStyle = C.accent;
+    ctx.globalAlpha = V.goalFill;
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = C.accent;
+    ctx.lineWidth = V.goalWidth;
+    ctx.stroke();
+    if (!this.tracing) {
+      for (let i = 0; i < world.walls.length; i++) drawWall(ctx, world.walls[i], 1, C.bone);
+    }
+    this.version = world.version;
+  }
+
+  toWorld(clientX, clientY) {
+    this.pointerPoint.x = (clientX - this.left - this.x) / this.scale;
+    this.pointerPoint.y = (clientY - this.top - this.y) / this.scale;
+    return this.pointerPoint;
+  }
+
+  draw(now, alpha, input, settings) {
+    const ctx = this.ctx;
+    const world = this.world;
+    this.reducedMotion = settings.reducedMotion;
+
+    if (this.mode === 'title') {
+      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = C.ink;
+      ctx.fillRect(0, 0, this.width, this.height);
+      const cx = this.width * 0.7;
+      const cy = this.height * 0.5;
+      const radius = Math.max(this.width, this.height) * 0.75;
+      const grad = ctx.createRadialGradient(cx, cy, 20, cx, cy, radius);
+      grad.addColorStop(0, 'rgba(27, 35, 43, 0.45)');
+      grad.addColorStop(1, 'rgba(12, 17, 22, 1)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, this.width, this.height);
+      return;
+    }
+
+    const elapsed = (now - this.loadedAt) * 1000;
+    if (this.tracing && (elapsed >= M.wallTotalMs || this.reducedMotion)) {
+      this.tracing = false;
+      this.buildCache();
+    } else if (this.version !== world.version) this.buildCache();
+    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = C.ink;
+    ctx.fillRect(0, 0, this.width, this.height);
+    ctx.drawImage(this.cache, this.x, this.y, W.width * this.scale, W.height * this.scale);
+    ctx.setTransform(this.scale * this.dpr, 0, 0, this.scale * this.dpr, this.x * this.dpr, this.y * this.dpr);
+    if (this.tracing) {
+      const stagger = Math.min(M.wallStaggerMs, (M.wallTotalMs - M.wallTraceMs) / Math.max(1, world.walls.length - 1));
+      for (let i = 0; i < world.walls.length; i++) {
+        const progress = Math.max(0, Math.min(1, (elapsed - i * stagger) / M.wallTraceMs));
+        drawWall(ctx, world.walls[i], ease(progress), C.bone);
+      }
+    }
+    if (!this.reducedMotion && this.mode !== 'title') {
+      for (let i = 0; i < world.walls.length; i++) {
+        const sinceHit = world.time - world.walls[i].hitAt;
+        if (sinceHit >= M.impactSeconds) continue;
+        ctx.globalAlpha = 1 - ease(sinceHit / M.impactSeconds);
+        drawWall(ctx, world.walls[i], 1, C.accent);
+      }
+    }
+    ctx.globalAlpha = 1;
+    this.drawGoal(ctx, now);
+    if (world.status === 'ready' && input.aiming && settings.aimPreview) this.drawAim(ctx, world, input.angle, input.dragging, world.level.id);
+    const x = world.px + (world.x - world.px) * alpha;
+    const y = world.py + (world.y - world.py) * alpha;
+    const angle = this.reducedMotion ? 0 : world.previousAngle + (world.angle - world.previousAngle) * alpha;
+    if (world.status === 'moving' && !this.reducedMotion) {
+      if (world.time - this.lastGhostTime >= 1 / 30) {
+        this.ghosts.push({ x: world.px, y: world.py, angle: world.previousAngle });
+        if (this.ghosts.length > 3) this.ghosts.shift();
+        this.lastGhostTime = world.time;
+      }
+      for (let i = 0; i < this.ghosts.length; i++) {
+        const ghost = this.ghosts[i];
+        this.drawPuck(ctx, ghost.x, ghost.y, ghost.angle, false, 0, false, (i + 1) * 0.1);
+      }
+    } else this.ghosts.length = 0;
+    this.drawPuck(ctx, x, y, angle, world.status === 'ready', input.angle, input.aiming && world.status === 'ready');
+    ctx.globalAlpha = 1;
+  }
+
+  drawGoal(ctx, now) {
+    if (this.world.status === 'won') {
+      if (this.wonAt === null) this.wonAt = now;
+      if (!this.reducedMotion && !this.goalFlashed) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'difference';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W.width, W.height);
+        ctx.restore();
+        this.goalFlashed = true;
+      }
+      const progress = (now - this.wonAt) / 0.3;
+      if (!this.reducedMotion && progress < 1) {
+        ctx.save();
+        ctx.translate(this.goalX, this.goalY);
+        hexagon(ctx, 20 + ease(progress) * 75);
+        ctx.globalAlpha = 1 - progress;
+        ctx.strokeStyle = C.accent;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+    const phase = now % M.goalPeriod / M.goalPeriod;
+    const pulse = ease(phase < 0.5 ? phase * 2 : 2 - phase * 2);
+    ctx.globalAlpha = this.reducedMotion || this.tracing ? 1 : M.goalOpacity + (1 - M.goalOpacity) * pulse;
+    ctx.strokeStyle = C.accent;
+    ctx.lineWidth = V.goalWidth;
+    const size = V.goalMarker;
+    segment(ctx, this.goalX - size, this.goalY, this.goalX + size, this.goalY);
+    segment(ctx, this.goalX, this.goalY - size, this.goalX, this.goalY + size);
+    ctx.globalAlpha = 1;
+  }
+
+  drawPuck(ctx, x, y, rotation, atRest, aimAngle = 0, isAiming = false, opacity = 1) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.globalAlpha = opacity;
+    if (atRest && isAiming) {
+      ctx.rotate(aimAngle);
+      ctx.beginPath();
+      ctx.moveTo(W.radius + 8, 0);
+      ctx.lineTo(W.radius, -4);
+      ctx.lineTo(W.radius, 4);
+      ctx.closePath();
+      ctx.fillStyle = C.accent;
+      ctx.fill();
+      ctx.rotate(-aimAngle);
+    }
+    ctx.rotate(rotation);
+    hexagon(ctx, W.radius + 3);
+    ctx.strokeStyle = C.accent;
+    ctx.globalAlpha = opacity * 0.35;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    hexagon(ctx, W.radius);
+    ctx.globalAlpha = opacity;
+    ctx.fillStyle = C.bone;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawAim(ctx, world, angle, dragging, levelIndex = 1) {
+    const length = Math.max(450, Math.min(2400, CONFIG.input.previewLength - levelIndex * 25));
+    const path = getAimTrajectory(world, angle, length);
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    ctx.save();
+    const primary = ctx.createLinearGradient(path.x0, path.y0, path.x1, path.y1);
+    primary.addColorStop(0, 'rgba(233,230,223,0.65)');
+    primary.addColorStop(1, 'rgba(233,230,223,0.28)');
+    ctx.strokeStyle = primary;
+    ctx.lineWidth = V.aimWidth;
+    ctx.setLineDash(AIM_DASH);
+    segment(ctx, path.x0, path.y0, path.x1, path.y1);
+    if (path.hasBounce) {
+      const reflected = ctx.createLinearGradient(path.x1, path.y1, path.x2, path.y2);
+      reflected.addColorStop(0, 'rgba(255,107,61,0.5)');
+      reflected.addColorStop(1, 'rgba(255,107,61,0)');
+      ctx.strokeStyle = reflected;
+      segment(ctx, path.x1, path.y1, path.x2, path.y2);
+      ctx.setLineDash([]);
+      ctx.strokeStyle = C.accent;
+      ctx.globalAlpha = 0.5;
+      ctx.beginPath();
+      ctx.arc(path.x1, path.y1, 4, 0, TAU);
+      ctx.stroke();
+    }
+    if (dragging) {
+      ctx.globalAlpha = V.puckRingOpacity;
+      ctx.strokeStyle = C.bone;
+      ctx.setLineDash([3, 3]);
+      segment(ctx, world.x - dx * V.puckRingRadius, world.y - dy * V.puckRingRadius, world.x - dx * V.puckRingRadius * 2, world.y - dy * V.puckRingRadius * 2);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
+}

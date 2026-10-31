@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Production build output
+dist/
+
+# Test outputs & temporary artifacts
+tests/artifacts/
+*.log
+
+# Editor & OS settings
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
