@@ -365,14 +365,23 @@ export class Renderer {
         ctx.globalAlpha = 0.14 + (1 - ratio) * 0.25;
         ctx.beginPath(); ctx.arc(well.x, well.y, well.radius * ratio, 0, TAU); ctx.stroke();
       }
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = C.gravityPurple;
+      ctx.beginPath();
+      ctx.arc(well.x, well.y, 4, 0, TAU);
+      ctx.fill();
       ctx.globalAlpha = 0.65;
       for (let i = 0; i < 8; i++) {
-        const angle = i * TAU / 8;
+        const angle = i * TAU / 8 + (this.reducedMotion ? 0 : now * 0.4);
         const radius = well.radius * 0.8;
-        const x = well.x + Math.cos(angle) * radius;
-        const y = well.y + Math.sin(angle) * radius;
-        segment(ctx, x, y, x + Math.cos(angle - 0.4) * 9, y + Math.sin(angle - 0.4) * 9);
-        segment(ctx, x, y, x + Math.cos(angle + 0.4) * 9, y + Math.sin(angle + 0.4) * 9);
+        const tipX = well.x + Math.cos(angle) * (radius - 8);
+        const tipY = well.y + Math.sin(angle) * (radius - 8);
+        const fin1X = well.x + Math.cos(angle - 0.25) * (radius + 2);
+        const fin1Y = well.y + Math.sin(angle - 0.25) * (radius + 2);
+        const fin2X = well.x + Math.cos(angle + 0.25) * (radius + 2);
+        const fin2Y = well.y + Math.sin(angle + 0.25) * (radius + 2);
+        segment(ctx, fin1X, fin1Y, tipX, tipY);
+        segment(ctx, fin2X, fin2Y, tipX, tipY);
       }
     }
     ctx.restore();

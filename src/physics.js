@@ -108,7 +108,7 @@ export function createWorld(level) {
     movingWalls: (level.movingWalls ?? []).map(item => ({ ...compileWall({ ...item, mat: item.mat ?? 'solid' }), baseA: [...item.a], baseB: [...item.b], delta: [...item.delta], freq: item.freq ?? 1, phase: item.phase ?? 0, active: item.active !== false, vx: 0, vy: 0 })),
     bumpers: (level.bumpers ?? []).map(item => ({ restitution: 1.25, ...item, hitAt: -Infinity })),
     portals: (level.portals ?? []).map(item => ({ ...item, A: { ...item.A }, B: { ...item.B }, cooldown: 0 })),
-    gravityWells: (level.gravityWells ?? []).map(item => ({ radius: 140, strength: 2200, ...item })),
+    gravityWells: (level.gravityWells ?? []).map(item => ({ radius: 100, strength: 1800, ...item })),
     teleports: 0,
   };
   updateMovingWalls(world);
@@ -264,11 +264,17 @@ export function stepWorld(world, dt = P.step) {
     const dx = well.x - world.x;
     const dy = well.y - world.y;
     const distance = Math.hypot(dx, dy);
-    if (distance < well.radius && distance > R) {
-      const acceleration = well.strength * (1 - distance / well.radius) / distance;
+    if (distance < well.radius && distance > 0) {
+      const factor = distance < R ? (distance / R) * (1 - R / well.radius) : (1 - distance / well.radius);
+      const acceleration = well.strength * factor / distance;
       world.vx += acceleration * dx * dt;
       world.vy += acceleration * dy * dt;
     }
+  }
+  const currentSpeed = Math.hypot(world.vx, world.vy);
+  if (currentSpeed > P.maxSpeed) {
+    world.vx *= P.maxSpeed / currentSpeed;
+    world.vy *= P.maxSpeed / currentSpeed;
   }
   world.angle += Math.hypot(world.vx, world.vy) * dt / R * CONFIG.motion.spinFactor;
   let remaining = dt;

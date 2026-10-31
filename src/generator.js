@@ -91,8 +91,8 @@ function candidate(index, seed, fallback = false) {
   const [bumperX, bumperY] = transform([790 + random() * 35, 660]);
   const bumpers = n >= 25 ? [{ x: bumperX, y: bumperY, radius: 25, restitution: 1.25 }] : [];
   const portals = n >= 35 ? [{ id: `gate-${n}`, A: portal(140, 650, 1, 0), B: portal(1020, 570, -1, 0), cooldown: 0 }] : [];
-  const [wellX, wellY] = transform([1030, 650]);
-  const gravityWells = n >= 50 ? [{ x: wellX, y: wellY, radius: 140, strength: 2200 }] : [];
+  const [wellX, wellY] = transform([650, 480]);
+  const gravityWells = n >= 50 ? [{ x: wellX, y: wellY, radius: 100, strength: 1800 }] : [];
   return {
     id: n, name: `Bank ${n}`, puck: transform([px, py]),
     goal: [[gx - w + c, gy - h], [gx + w, gy - h], [gx + w, gy + h - c], [gx + w - c, gy + h], [gx - w, gy + h], [gx - w, gy - h + c]].map(transform),
