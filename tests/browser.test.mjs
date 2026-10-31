@@ -1,4 +1,4 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { existsSync, mkdirSync } from 'node:fs';
 import { CONFIG, DEG } from '../src/config.js';
@@ -11,7 +11,7 @@ let checks = 0;
 const errors = [];
 const check = (value, message) => { assert.ok(value, message); checks++; console.log(`ok ${checks} ${message}`); };
 const screen = p => p.locator('.bankshot').getAttribute('data-screen');
-const db = p => p.evaluate(() => JSON.parse(localStorage.getItem('bankshot.db.v2')));
+const db = p => p.evaluate(() => JSON.parse(localStorage.getItem('bankshot.db.v3')));
 const action = (p, n) => p.locator(`[data-action="${n}"]:visible`).first();
 const tick = (p, ms = 500) => p.clock.runFor(ms);
 mkdirSync('tests/artifacts', { recursive: true });
@@ -42,10 +42,10 @@ async function solve(p, room, interrupt = false) { const expected = createWorld(
     while (expected.status === 'moving' && steps++ < CONFIG.tests.maxSteps)
         stepWorld(expected);
     await tick(p, Math.ceil(steps * CONFIG.physics.step * 1000) + 700);
-} if (await screen(p) !== 'result') {
+} if (await p.locator('.promotion-overlay').isVisible()) { check((await p.locator('.promotion-overlay').textContent()).includes('RANK PROMOTION'), 'Promotion fanfare appears'); await p.locator('[data-promotion-close]').click(); await tick(p, 50); } if (await screen(p) !== 'result') {
     console.log('FAIL ROOM', room.id, JSON.stringify(room.solution), await db(p), await p.locator('.hud').textContent());
     await p.screenshot({ path: `tests/artifacts/fail-${room.id}.png` });
-} check(await screen(p) === 'result', `Real pointer clears room ${room.id}`); check(await p.locator('[data-result-rank]').textContent() === 'S', `Room ${room.id} awards S`); }
+} check(await screen(p) === 'result', `Real pointer clears room ${room.id}`); check(await p.locator('[data-result-rank]').textContent() === 'A', `Room ${room.id} awards A`); }
 try {
     const first = await open();
     check(await first.locator('.bankshot').getAttribute('data-intro') !== null, 'Full intro starts');
@@ -54,6 +54,19 @@ try {
     await tick(first, 1800);
     check(await first.locator('.guide-backdrop').isVisible(), 'First visit guide opens after intro');
     await first.screenshot({ path: 'tests/artifacts/guide.png' });
+    await first.locator('[data-guide-tab="3"]').click();
+    check(await first.locator('[data-ladder-tier]').count() === 25, 'Guide shows all 25 ladder tiers');
+    await first.locator('[data-ladder-tier="24"]').click();
+    check((await first.locator('.ladder-selected').textContent()).includes('RADIANT'), 'Ladder selection updates detail');
+    const practiceBefore = JSON.stringify(await db(first));
+    await first.locator('[data-guide-tab="4"]').click();
+    const practice = first.locator('.practice-canvas');
+    await practice.focus();
+    await first.keyboard.press('Space');
+    await tick(first, 300);
+    check((await first.locator('[data-sandbox-status]').textContent()).includes('1 SHOTS'), 'Practice canvas fires a real shot');
+    check(JSON.stringify(await db(first)) === practiceBefore, 'Practice does not mutate career');
+    await first.locator('[data-guide-tab="0"]').click();
     await first.keyboard.press('ArrowRight');
     check(await first.locator('[data-guide-tab="1"]').getAttribute('aria-selected') === 'true', 'Guide arrow navigation');
     await first.keyboard.press('6');
@@ -100,7 +113,7 @@ try {
     await p.locator('[data-index="1"]').click();
     await solve(p, generateRoom(1, seed));
     saved = await db(p);
-    check(saved.maxUnlocked === 13 && saved.levelRecords[1].completions === 2 && saved.levelRecords[1].rank === 'S', 'Replay preserves unlock and best rank');
+    check(saved.maxUnlocked === 13 && saved.levelRecords[1].completions === 2 && saved.levelRecords[1].rank === 'A', 'Replay preserves unlock and best rank');
     await action(p, 'next').click();
     await tick(p, 2200);
     await p.keyboard.press('Escape');
@@ -111,6 +124,12 @@ try {
     await action(p, 'settings').click();
     await p.locator('[data-key="aimPreview"]').click();
     check((await db(p)).settings.aimPreview === false, 'Aim setting persists');
+    await p.locator('#touch-sensitivity').fill('1.5');
+    await p.locator('#reduced-mode').selectOption('off');
+    await p.locator('[data-key="highDpi"]').click();
+    check((await db(p)).settings.touchSensitivity === 1.5, 'Touch sensitivity persists');
+    check((await db(p)).settings.reducedMotionMode === 'off' && (await db(p)).settings.highDpi === false, 'Display controls persist');
+    await p.locator('#reduced-mode').selectOption('on');
     for (const v of [{ width: 360, height: 640 }, { width: 768, height: 1024 }, { width: 844, height: 390 }, { width: 1920, height: 1080 }]) {
         await p.setViewportSize(v);
         await tick(p, 60);
@@ -209,3 +228,6 @@ try {
 finally {
     await browser.close();
 }
+
+
+

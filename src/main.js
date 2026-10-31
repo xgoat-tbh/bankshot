@@ -8,7 +8,7 @@ import { safeStore } from './state.js';
 
 export function mountGame(root) {
   const store = safeStore();
-  const getRoom = createRoomProvider(store.data.userSeed, 32, () => store.getPerformanceRatio());
+  const getRoom = createRoomProvider(store.data.userSeed, 32);
   const media = window.matchMedia('(prefers-reduced-motion: reduce)');
   const settings = { reducedMotion: false, aimPreview: true };
   const chaptersSeen = new Set();
@@ -36,15 +36,19 @@ export function mountGame(root) {
   if (window.matchMedia('(pointer: coarse)').matches) input.setKind('touch');
 
   function updateSettings() {
-    settings.reducedMotion = media.matches || store.data.settings.reducedMotion;
+    const mode = store.data.settings.reducedMotionMode ?? (store.data.settings.reducedMotion ? 'on' : 'system');
+    settings.reducedMotion = mode === 'system' ? media.matches : mode === 'on';
     settings.aimPreview = store.data.settings.aimPreview;
-    ui.setSettings(settings, media.matches);
+    ui.setSettings({ ...store.data.settings, ...settings }, mode === 'system' && media.matches);
     renderer.reducedMotion = settings.reducedMotion;
+    input.touchSensitivity = store.data.settings.touchSensitivity ?? 1;
+    renderer.highDpi = store.data.settings.highDpi !== false;
+    renderer.resize();
   }
   function resetClock() { accumulator = 0; lastTime = 0; }
   function abandonAttempt(force = false) {
     if (world && world.shots > 0 && world.status !== 'won' && !world.abandoned) {
-      if (force || world.shots >= world.budget) {
+      if (force || world.shots > 0) {
         store.recordFailure(levelIndex);
         world.abandoned = true;
       }
@@ -61,6 +65,8 @@ export function mountGame(root) {
     store.select(index);
     world = createWorld(level);
     world.budget = store.calculateBudget(index, level.par);
+    world.winStreak = store.data.winStreak ?? 0;
+    world.lossStreak = store.data.lossStreak ?? 0;
     world.lastOutcome = outcome;
     resetClock();
     phase = 'game';
@@ -162,6 +168,7 @@ export function mountGame(root) {
     else if (name === 'home') { if (phase === 'game') pause(); else title(); }
     else if (['levels', 'settings', 'stats'].includes(name)) showScreen(name);
     else if (name === 'setting') { store.toggle(data.key); updateSettings(); }
+    else if (name === 'setting-value') { store.setSetting(data.key, data.key === "touchSensitivity" ? Number(data.value) : data.value); updateSettings(); }
     else if (name === 'back') back();
     else if (name === 'pause') togglePause();
     else if (name === 'resume') resume();
@@ -170,12 +177,17 @@ export function mountGame(root) {
     else if (name === 'guide') openGuide();
     else if (name === 'guide-close') closeGuide();
   }
-  function complete() {
+  async function complete() {
+    const token = transition;
     phase = 'result';
     input.enabled = false;
     input.cancel();
-    const grade = store.recordSuccess(world.level, world.shots, world.shots, world.budget);
+    const grade = store.recordSuccess(world.level, world.shots, world.shots, world.budget, world.time, store.data.currentFailStreak === 0);
     ui.update(world, input);
+    const rankInfo = store.getRankInfo();
+    if (rankInfo.justPromoted) { phase = 'promotion'; await ui.showPromotion(rankInfo); }
+    if (destroyed || token !== transition) return;
+    phase = 'result';
     ui.result(world, levelIndex, grade);
   }
   function frame(timestamp) {

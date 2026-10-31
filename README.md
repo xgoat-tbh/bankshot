@@ -1,3 +1,5 @@
+﻿> **v3 update:** See [current ranked rules, migration, mechanics, and settings](docs/bankshot-v3.md). The v3 implementation supersedes older rating examples below.
+
 <div align="center">
 
 # 🎱 BANKSHOT
@@ -321,3 +323,4 @@ This project is licensed under the [MIT License](LICENSE) — free to use, modif
 <div align="center">
 <sub>Crafted with geometric precision by <b>xgoat.tbh</b>. Find your angle.</sub>
 </div>
+

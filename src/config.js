@@ -57,9 +57,9 @@ export const CONFIG = Object.freeze({
     minTarget: 44, portraitRatio: 0.9, sideUnits: 14, topUnits: 11, bottomUnits: 11,
     mobileSideUnits: 2, mobileTopUnits: 16, mobileBottomUnits: 16,
   },
-  palette: { ink: '#0C1116', slate: '#1B232B', grey: '#5B6670', bone: '#E9E6DF', accent: '#FF6B3D' },
+  palette: { ink: '#0C1116', slate: '#1B232B', grey: '#5B6670', bone: '#E9E6DF', accent: '#FF6B3D', portalCyan: '#00E5FF', bumperOrange: '#FF9100', gravityPurple: '#D500F9', movingWhite: '#FFFFFF', fireGold: '#FFD700', fireAmber: '#FF6D00' },
   game: { chapters: ['Trajectory', 'Resilience', 'Fragility', 'The Void', 'Mastery'], chapterSize: 10 },
-  storage: { key: 'bankshot.db.v2', version: 2, legacyKey: 'bankshot.progress.v1' },
+  storage: { key: 'bankshot.db.v3', version: 3, legacyKey: 'bankshot.db.v2' },
   tests: { tolerance: 0.001, maxSteps: 3200, stressAngles: 48 },
 });
 

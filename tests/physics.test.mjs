@@ -13,6 +13,42 @@ const fixture = (walls = [], extras = {}) => ({
 });
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < CONFIG.tests.tolerance, `${actual} != ${expected}`);
 
+test('moving segment follows its oscillation and collides continuously', () => {
+  const world = createWorld(fixture([], { movingWalls: [{ a: [120, 300], b: [120, 500], delta: [20, 0], freq: 1, phase: 0 }] }));
+  launch(world, 0, 1);
+  for (let i = 0; i < 8; i++) stepWorld(world);
+  assert.ok(world.impacts > 0);
+  close(world.movingWalls[0].ax, 120 + Math.sin(world.time) * 20);
+});
+
+test('bumper sweep reflects fast puck with bounded boosted speed and flashes', () => {
+  const world = createWorld(fixture([], { bumpers: [{ x: 150, y: 400, radius: 20, restitution: 1.25 }] }));
+  launch(world, 0, 0.6);
+  for (let i = 0; i < 10; i++) stepWorld(world);
+  assert.ok(world.vx < -1100);
+  assert.ok(Math.hypot(world.vx, world.vy) <= CONFIG.physics.maxSpeed);
+  assert.ok(Number.isFinite(world.bumpers[0].hitAt));
+});
+
+test('portal sweeps fast entering puck, rotates exit velocity and prevents immediate recursion', () => {
+  const world = createWorld(fixture([], { portals: [{ id: 'pair', A: { x: 140, y: 400, nx: -1, ny: 0, radius: 18 }, B: { x: 700, y: 300, nx: 0, ny: 1, radius: 18 } }] }));
+  launch(world, 0, 1);
+  for (let i = 0; i < 5; i++) stepWorld(world);
+  assert.ok(world.y > 330 && world.x > 690 && world.x < 710);
+  assert.ok(world.vy > 1700);
+  assert.equal(world.teleports, 1);
+  assert.ok(world.portals[0].cooldown > 0);
+});
+
+test('gravity force bends gliding velocity toward nearby well without moving resting puck', () => {
+  const world = createWorld(fixture([], { gravityWells: [{ x: 130, y: 450, radius: 140, strength: 2200 }] }));
+  stepWorld(world);
+  assert.equal(world.y, 400);
+  launch(world, 0, 0.2);
+  stepWorld(world);
+  assert.ok(world.vy > 0);
+});
+
 test('swept face collision at maximum speed', () => {
   const result = collisionResult();
   sweepCircleSegment(100, 400, 1800, 0, 14, compileWall(wall([200, 200], [200, 600])), 1, result);

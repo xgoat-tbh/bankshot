@@ -77,7 +77,7 @@ export class Input {
     const dy = this.startY - event.clientY;
     this.dragLength = Math.hypot(dx, dy);
     if (this.dragLength <= CONFIG.physics.epsilon) { this.power = 0; return; }
-    const maxDrag = this.pointerKind === 'touch' ? I.touchDragPixels : I.dragPixels;
+    const maxDrag = this.pointerKind === 'touch' ? I.touchDragPixels / (this.touchSensitivity || 1) : I.dragPixels;
     // Edge-aware calibration keeps full power reachable on a small screen.
     const localX = this.startX - this.renderer.left;
     const localY = this.startY - this.renderer.top;

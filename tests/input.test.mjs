@@ -21,3 +21,5 @@ test('precise placement powers remain accessible beyond the cancel zone on touch
 test('keyboard can charge the smallest reference placement shot', () => {
   assert.ok(CONFIG.input.minimumPower <= 0.035);
 });
+
+

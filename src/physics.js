@@ -4,7 +4,7 @@ const P = CONFIG.physics;
 const R = CONFIG.world.radius;
 
 export function collisionResult() {
-  return { time: Infinity, nx: 0, ny: 0, wall: -1 };
+  return { time: Infinity, nx: 0, ny: 0, wall: -1, kind: null, index: -1 };
 }
 
 export function compileWall(wall) {
@@ -98,14 +98,77 @@ export function polygonEntry(x, y, dx, dy, polygon) {
 }
 
 export function createWorld(level) {
-  return {
+  const world = {
     level, x: level.puck[0], y: level.puck[1], px: level.puck[0], py: level.puck[1],
     vx: 0, vy: 0, angle: 0, previousAngle: 0, status: 'ready', shots: 0,
     time: 0, shotTime: 0, startX: level.puck[0], startY: level.puck[1],
     walls: level.walls.map(compileWall), goal: level.goal, hazards: level.hazards,
     collision: collisionResult(), preview: collisionResult(), version: 0,
     impacts: 0, breaks: 0, failures: 0, lastOutcome: '',
+    movingWalls: (level.movingWalls ?? []).map(item => ({ ...compileWall({ ...item, mat: item.mat ?? 'solid' }), baseA: [...item.a], baseB: [...item.b], delta: [...item.delta], freq: item.freq ?? 1, phase: item.phase ?? 0, active: item.active !== false, vx: 0, vy: 0 })),
+    bumpers: (level.bumpers ?? []).map(item => ({ restitution: 1.25, ...item, hitAt: -Infinity })),
+    portals: (level.portals ?? []).map(item => ({ ...item, A: { ...item.A }, B: { ...item.B }, cooldown: 0 })),
+    gravityWells: (level.gravityWells ?? []).map(item => ({ radius: 140, strength: 2200, ...item })),
+    teleports: 0,
   };
+  updateMovingWalls(world);
+  return world;
+}
+
+function updateMovingWalls(world, time = world.time) {
+  for (const wall of world.movingWalls) {
+    const phase = wall.freq * time + wall.phase;
+    const offset = Math.sin(phase);
+    wall.ax = wall.baseA[0] + wall.delta[0] * offset;
+    wall.ay = wall.baseA[1] + wall.delta[1] * offset;
+    wall.bx = wall.baseB[0] + wall.delta[0] * offset;
+    wall.by = wall.baseB[1] + wall.delta[1] * offset;
+    wall.vx = Math.cos(phase) * wall.freq * wall.delta[0];
+    wall.vy = Math.cos(phase) * wall.freq * wall.delta[1];
+  }
+}
+
+function circleSweep(x, y, vx, vy, cx, cy, radius, maxTime, out) {
+  const ox = x - cx;
+  const oy = y - cy;
+  const speed = vx * vx + vy * vy;
+  const projection = ox * vx + oy * vy;
+  if (speed < P.epsilon || projection >= 0) return;
+  const c = ox * ox + oy * oy - radius * radius;
+  const discriminant = projection * projection - speed * c;
+  if (discriminant < 0) return;
+  const time = c <= 0 ? 0 : (-projection - Math.sqrt(discriminant)) / speed;
+  if (time > maxTime || time >= out.time || time < 0) return;
+  const nx = ox + vx * time;
+  const ny = oy + vy * time;
+  const distance = Math.hypot(nx, ny);
+  if (distance < P.epsilon) return;
+  out.time = time;
+  out.nx = nx / distance;
+  out.ny = ny / distance;
+}
+
+function portalCollision(world, x, y, vx, vy, maxTime, excluded = null) {
+  const hit = { time: Infinity, pair: null, entrance: null, exit: null };
+  for (const pair of world.portals) {
+    if (pair === excluded || pair.cooldown > 0) continue;
+    for (const [entrance, exit] of [[pair.A, pair.B], [pair.B, pair.A]]) {
+      if (vx * entrance.nx + vy * entrance.ny >= -P.epsilon) continue;
+      const candidate = collisionResult();
+      circleSweep(x, y, vx, vy, entrance.x, entrance.y, entrance.radius, maxTime, candidate);
+      if (candidate.time < hit.time) Object.assign(hit, { time: candidate.time, pair, entrance, exit });
+    }
+  }
+  return hit;
+}
+
+function portalExit(hit, vx, vy) {
+  // Incoming direction points against entrance normal; outgoing follows exit normal.
+  const angle = Math.atan2(hit.exit.ny, hit.exit.nx) - Math.atan2(-hit.entrance.ny, -hit.entrance.nx);
+  const cosine = Math.cos(angle);
+  const sine = Math.sin(angle);
+  const clearance = hit.exit.radius + R + P.separation;
+  return { x: hit.exit.x + hit.exit.nx * clearance, y: hit.exit.y + hit.exit.ny * clearance, vx: vx * cosine - vy * sine, vy: vx * sine + vy * cosine };
 }
 
 export function launch(world, angle, power) {
@@ -123,17 +186,33 @@ export function launch(world, angle, power) {
   return true;
 }
 
-export function findCollision(world, x, y, vx, vy, maxTime, out) {
+export function findCollision(world, x, y, vx, vy, maxTime, out, moving = false, movingOffset = 0) {
   out.time = Infinity;
   out.wall = -1;
   out.nx = 0;
   out.ny = 0;
+  out.kind = null;
+  out.index = -1;
   for (let i = 0; i < world.walls.length; i++) {
     const wall = world.walls[i];
     if (!wall.active) continue;
     const before = out.time;
     sweepCircleSegment(x, y, vx, vy, R, wall, maxTime, out);
-    if (out.time < before) out.wall = i;
+    if (out.time < before) { out.wall = i; out.kind = 'wall'; out.index = i; }
+  }
+  for (let i = 0; i < world.movingWalls.length; i++) {
+    const wall = world.movingWalls[i];
+    if (!wall.active) continue;
+    const before = out.time;
+    const segment = movingOffset ? { ...wall, ax: wall.ax + wall.vx * movingOffset, ay: wall.ay + wall.vy * movingOffset, bx: wall.bx + wall.vx * movingOffset, by: wall.by + wall.vy * movingOffset } : wall;
+    sweepCircleSegment(x, y, vx - (moving ? wall.vx : 0), vy - (moving ? wall.vy : 0), R, segment, maxTime, out);
+    if (out.time < before) { out.wall = world.walls.length + i; out.kind = 'moving'; out.index = i; }
+  }
+  for (let i = 0; i < world.bumpers.length; i++) {
+    const bumper = world.bumpers[i];
+    const before = out.time;
+    circleSweep(x, y, vx, vy, bumper.x, bumper.y, R + bumper.radius, maxTime, out);
+    if (out.time < before) { out.wall = -2; out.kind = 'bumper'; out.index = i; }
   }
   return out;
 }
@@ -174,22 +253,59 @@ export function stepWorld(world, dt = P.step) {
   world.py = world.y;
   world.previousAngle = world.angle;
   world.time += dt;
-  if (world.status !== 'moving') return;
+  for (const pair of world.portals) pair.cooldown = Math.max(0, pair.cooldown - dt);
+  if (world.status !== 'moving') { updateMovingWalls(world); return; }
+  updateMovingWalls(world, world.time - dt);
   world.shotTime += dt;
   const damping = Math.exp(-P.damping * dt);
   world.vx *= damping;
   world.vy *= damping;
+  for (const well of world.gravityWells) {
+    const dx = well.x - world.x;
+    const dy = well.y - world.y;
+    const distance = Math.hypot(dx, dy);
+    if (distance < well.radius && distance > R) {
+      const acceleration = well.strength * (1 - distance / well.radius) / distance;
+      world.vx += acceleration * dx * dt;
+      world.vy += acceleration * dy * dt;
+    }
+  }
   world.angle += Math.hypot(world.vx, world.vy) * dt / R * CONFIG.motion.spinFactor;
   let remaining = dt;
   let count = 0;
   while (remaining > P.epsilon && count < P.maxCollisions) {
-    const hit = findCollision(world, world.x, world.y, world.vx, world.vy, remaining, world.collision);
-    const travel = Math.min(remaining, hit.time);
-    if (moveThroughRegions(world, world.vx * travel, world.vy * travel)) return;
+    const hit = findCollision(world, world.x, world.y, world.vx, world.vy, remaining, world.collision, true, dt - remaining);
+    const portal = portalCollision(world, world.x, world.y, world.vx, world.vy, remaining);
+    const travel = Math.min(remaining, hit.time, portal.time);
+    if (moveThroughRegions(world, world.vx * travel, world.vy * travel)) { updateMovingWalls(world); return; }
     remaining -= travel;
-    if (hit.wall < 0) break;
-    const wall = world.walls[hit.wall];
-    const normalSpeed = world.vx * hit.nx + world.vy * hit.ny;
+    if (portal.time <= hit.time && portal.time <= travel) {
+      const exit = portalExit(portal, world.vx, world.vy);
+      Object.assign(world, { x: exit.x, y: exit.y, px: exit.x, py: exit.y, vx: exit.vx, vy: exit.vy });
+      portal.pair.cooldown = 0.15;
+      world.teleports++;
+      count++;
+      continue;
+    }
+    if (!hit.kind) break;
+    if (hit.kind === 'bumper') {
+      const bumper = world.bumpers[hit.index];
+      const dot = world.vx * hit.nx + world.vy * hit.ny;
+      world.vx = (world.vx - 2 * dot * hit.nx) * bumper.restitution;
+      world.vy = (world.vy - 2 * dot * hit.ny) * bumper.restitution;
+      const speed = Math.hypot(world.vx, world.vy);
+      if (speed > P.maxSpeed) { world.vx *= P.maxSpeed / speed; world.vy *= P.maxSpeed / speed; }
+      world.x += hit.nx * P.separation;
+      world.y += hit.ny * P.separation;
+      bumper.hitAt = world.time;
+      world.impacts++;
+      count++;
+      continue;
+    }
+    const wall = hit.kind === 'moving' ? world.movingWalls[hit.index] : world.walls[hit.wall];
+    const wallVx = hit.kind === 'moving' ? wall.vx : 0;
+    const wallVy = hit.kind === 'moving' ? wall.vy : 0;
+    const normalSpeed = (world.vx - wallVx) * hit.nx + (world.vy - wallVy) * hit.ny;
     wall.hitAt = world.time;
     world.impacts++;
     if (wall.mat === 'glass' && -normalSpeed >= P.glassThreshold) {
@@ -207,6 +323,7 @@ export function stepWorld(world, dt = P.step) {
     }
     count++;
   }
+  updateMovingWalls(world);
   // If an adversarial corner exhausts the cap, discard remaining time, never tunnel.
   if (Math.hypot(world.vx, world.vy) < P.stopSpeed || world.shotTime >= P.shotLimit) {
     world.vx = 0;
@@ -225,11 +342,23 @@ export function getAim(world, angle, out = world.preview) {
 }
 
 export function getAimTrajectory(world, angle, maxLength = CONFIG.input.previewLength) {
+  return traceAim(world, angle, maxLength, 0);
+}
+
+function traceAim(world, angle, maxLength, depth, excluded = null) {
   const length = Number.isFinite(maxLength) ? Math.max(0, maxLength) : CONFIG.input.previewLength;
   const dx = Math.cos(angle);
   const dy = Math.sin(angle);
   const hit = findCollision(world, world.x, world.y, dx, dy, length, world.preview);
-  const hasBounce = hit.wall >= 0 && hit.time <= length;
+  const portal = depth < 4 ? portalCollision(world, world.x, world.y, dx, dy, length, excluded) : { time: Infinity };
+  if (portal.time < hit.time && portal.time <= length) {
+    const x1 = world.x + dx * portal.time;
+    const y1 = world.y + dy * portal.time;
+    const exit = portalExit(portal, dx, dy);
+    const next = traceAim({ ...world, x: exit.x, y: exit.y, preview: collisionResult() }, Math.atan2(exit.vy, exit.vx), length - portal.time, depth + 1, portal.pair);
+    return { x0: world.x, y0: world.y, x1, y1, x2: next.x2, y2: next.y2, hasBounce: next.hasBounce, hasPortal: true, normal: next.normal, segments: [{ x0: world.x, y0: world.y, x1, y1 }, ...next.segments] };
+  }
+  const hasBounce = Boolean(hit.kind) && hit.time <= length;
   const distance = hasBounce ? hit.time : length;
   const x1 = world.x + dx * distance;
   const y1 = world.y + dy * distance;
@@ -243,11 +372,20 @@ export function getAimTrajectory(world, angle, maxLength = CONFIG.input.previewL
   const hit2 = collisionResult();
   if (hasBounce && remaining > 0) findCollision(world, startX, startY, reflectedX, reflectedY, remaining, hit2);
   const secondLength = Math.min(remaining, hit2.time);
+  const x2 = startX + reflectedX * secondLength;
+  const y2 = startY + reflectedY * secondLength;
+  const secondPortal = hasBounce && depth < 4 ? portalCollision(world, startX, startY, reflectedX, reflectedY, secondLength, excluded) : { time: Infinity };
+  if (secondPortal.time <= secondLength) {
+    const entryX = startX + reflectedX * secondPortal.time;
+    const entryY = startY + reflectedY * secondPortal.time;
+    const exit = portalExit(secondPortal, reflectedX, reflectedY);
+    const next = traceAim({ ...world, x: exit.x, y: exit.y, preview: collisionResult() }, Math.atan2(exit.vy, exit.vx), remaining - secondPortal.time, depth + 1, secondPortal.pair);
+    return { x0: world.x, y0: world.y, x1, y1, x2: next.x2, y2: next.y2, hasBounce, hasPortal: true, normal, segments: [{ x0: world.x, y0: world.y, x1, y1 }, { x0: startX, y0: startY, x1: entryX, y1: entryY }, ...next.segments] };
+  }
   return {
     x0: world.x, y0: world.y, x1, y1,
-    x2: startX + reflectedX * secondLength,
-    y2: startY + reflectedY * secondLength,
-    hasBounce, normal,
+    x2, y2, hasBounce, normal, hasPortal: false,
+    segments: [{ x0: world.x, y0: world.y, x1, y1 }, ...(hasBounce ? [{ x0: startX, y0: startY, x1: x2, y1: y2 }] : [])],
   };
 }
 

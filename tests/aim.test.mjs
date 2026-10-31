@@ -2,6 +2,50 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as physics from '../src/physics.js';
 import { CONFIG } from '../src/config.js';
+import { Renderer } from '../src/render.js';
+import { generateRoom } from '../src/generator.js';
+
+test('renderer draws v3 vectors, bounded streak embers, portal guides and density settings', () => {
+  const gradient = { addColorStop() {} };
+  const context = new Proxy({ createLinearGradient: () => gradient, createRadialGradient: () => gradient }, { get: (target, key) => key in target ? target[key] : () => {} });
+  const canvas = () => ({ getContext: () => context, getBoundingClientRect: () => ({ width: 1200, height: 900, left: 0, top: 0 }) });
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = { createElement: canvas };
+  globalThis.window = { devicePixelRatio: 3 };
+  try {
+    const renderer = new Renderer(canvas());
+    const world = physics.createWorld(generateRoom(50, 'render-smoke'));
+    world.winStreak = 3;
+    renderer.setWorld(world, 'game', 0);
+    assert.equal(renderer.dpr, 2);
+    renderer.highDpi = false;
+    renderer.resize();
+    assert.equal(renderer.dpr, 1);
+    world.status = 'moving';
+    for (let i = 0; i < 60; i++) renderer.draw(i / 60, 1, { aiming: false, angle: 0 }, { reducedMotion: false });
+    assert.ok(renderer.embers.length > 0 && renderer.embers.length <= 32);
+    world.status = 'won';
+    world.shots = 1;
+    renderer.draw(1.1, 1, { aiming: false, angle: 0 }, { reducedMotion: false });
+    renderer.draw(1.2, 1, { aiming: false, angle: 0 }, { reducedMotion: true });
+    assert.equal(renderer.embers.length, 0);
+    const portalWorld = physics.createWorld({ puck: [100, 100], walls: [], goal: [], hazards: [], portals: [{ A: { x: 160, y: 100, nx: -1, ny: 0, radius: 20 }, B: { x: 600, y: 300, nx: 0, ny: 1, radius: 20 } }] });
+    renderer.drawAim(context, portalWorld, 0, false, 1);
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+  }
+});
+
+test('aim ray crosses a portal and starts a separate exit segment', () => {
+  const world = physics.createWorld({ puck: [100, 100], walls: [], goal: [], hazards: [], portals: [{ A: { x: 160, y: 100, nx: -1, ny: 0, radius: 20 }, B: { x: 600, y: 300, nx: 0, ny: 1, radius: 20 } }] });
+  const path = physics.getAimTrajectory(world, 0, 300);
+  assert.equal(path.hasPortal, true);
+  assert.ok(path.segments.length >= 2);
+  assert.ok(path.segments[1].y0 > 330);
+  assert.ok(path.segments[1].y1 > path.segments[1].y0);
+});
 
 test('trajectory hits swept radius then reflects across the exact normal', () => {
   assert.equal(typeof physics.getAimTrajectory, 'function');

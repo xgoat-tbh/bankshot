@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import * as state from '../src/state.js';
 const memory = (entries = {}) => ({ getItem: key => entries[key] ?? null, setItem: (key, value) => { entries[key] = value; }, entries });
 const make = () => state.createStore(memory());
-test('v2 uses one-based sequential unlocks and persists a UUID', () => {
+test('v3 uses one-based sequential unlocks and persists a UUID', () => {
  const storage = memory(); const s = state.createStore(storage);
- assert.equal(s.data.version, 2); assert.match(s.data.userSeed, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i);
+ assert.equal(s.data.version, 3); assert.match(s.data.userSeed, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i);
  assert.equal(s.canPlay(1), true); assert.equal(s.canPlay(0), false); assert.equal(s.select(2), false);
  s.recordSuccess({id:1,par:1},1); assert.equal(s.data.maxUnlocked,2); assert.equal(s.select(2),true);
  assert.equal(state.createStore(storage).data.userSeed,s.data.userSeed);
@@ -18,9 +18,9 @@ test('adaptive budgets cover ratio boundaries and pity', () => {
  assert.equal(state.calculateTriesBudget(4,[1.50001]),5);
  assert.equal(state.calculateTriesBudget(2,[2],6),7);
 });
-test('letter ranks prioritize par thresholds then distinguish last try and failure', () => {
- assert.deepEqual([1,2,3,4].map(n=>state.calculateRank(n,2)),['S','S','A','B']);
- assert.equal(state.calculateRank(5,2,5,6),'C'); assert.equal(state.calculateRank(5,2,6,6),'D');
+test('v3 grades use strict under-par and ignore last try and failure history', () => {
+ assert.deepEqual([1,2,3,4].map(n=>state.calculateRank(n,2)),['S','A','B','C']);
+ assert.equal(state.calculateRank(5,2,5,6),'D'); assert.equal(state.calculateRank(5,2,6,6),'D');
  assert.equal(state.calculateRank(5,2,5,8,1),'D');
 });
 test('room pity survives switching and reload and resets on success', () => {
@@ -30,13 +30,13 @@ test('room pity survives switching and reload and resets on success', () => {
  assert.equal(s.data.currentFailStreak,3); assert.equal(s.calculateBudget(2,2),4);
  s.recordSuccess({id:2,par:2},2); assert.equal(s.data.currentFailStreak,0);
 });
-test('best rank upgrades independently of shots; stats count unique rooms and every fired shot', () => {
+test('replays improve best grades and stats count unique rooms and every fired shot', () => {
  const s=make(); for(let i=0;i<12;i++) s.recordShot();
  s.recordFailure(); assert.equal(s.recordSuccess({id:1,par:1},5,5,8),'D');
- assert.equal(s.recordSuccess({id:1,par:1},5,5,8),'C');
- assert.equal(s.data.levelRecords[1].bestRank,'C');
+ assert.equal(s.recordSuccess({id:1,par:1},5,5,8),'D');
+ assert.equal(s.data.levelRecords[1].bestRank,'D');
  s.recordSuccess({id:1,par:1},1); assert.equal(s.data.levelRecords[1].bestShots,1);
- assert.equal(s.data.stats.levelsCompleted,1); assert.equal(s.data.stats.sRanks,1); assert.equal(s.data.stats.dRanks,0);
+ assert.equal(s.data.stats.levelsCompleted,1); assert.equal(s.data.stats.aRanks,1); assert.equal(s.data.stats.dRanks,0);
  assert.equal(s.data.stats.totalShotsFired,12); assert.ok(s.getStats().accuracy>0 && s.getStats().accuracy<=100);
 });
 test('rolling completion ratios retain only latest ten attempts including replays', () => {
@@ -51,14 +51,14 @@ test('invalid and locked room operations do not mutate progression', () => {
 });
 test('malformed fields repair without losing valid settings or seed', () => {
  const storage=memory(); const original=state.createStore(storage).data.userSeed;
- storage.entries['bankshot.db.v2']=JSON.stringify({version:2,userSeed:original,currentLevel:999,maxUnlocked:999,stats:{totalShotsFired:-2,recentShots:[1,null,-2,2]},levelRecords:{1:{bestShots:2,bestRank:'A',par:1},3:{bestShots:1,bestRank:'S',par:1}},settings:{aimPreview:false,reducedMotion:'yes'}});
+ storage.entries['bankshot.db.v3']=JSON.stringify({version:3,userSeed:original,currentLevel:999,maxUnlocked:999,stats:{totalShotsFired:-2,recentShots:[1,null,-2,2]},levelRecords:{1:{bestShots:2,bestRank:'A',par:1},3:{bestShots:1,bestRank:'S',par:1}},settings:{aimPreview:false,reducedMotion:'yes'}});
  const s=state.createStore(storage); assert.equal(s.data.userSeed,original); assert.equal(s.data.maxUnlocked,2); assert.equal(s.data.currentLevel,2);
  assert.equal(s.data.settings.aimPreview,false); assert.equal(s.data.settings.reducedMotion,false); assert.equal(s.data.stats.totalShotsFired,0);
  assert.deepEqual(s.data.stats.recentShots,[1,2]); assert.equal(s.data.stats.levelsCompleted,1);
 });
 test('corrupt JSON is replaced and denied storage remains playable', () => {
- const storage=memory({'bankshot.db.v2':'{broken'}); const s=state.createStore(storage);
- assert.equal(JSON.parse(storage.entries['bankshot.db.v2']).version,2);
+ const storage=memory({'bankshot.db.v3':'{broken'}); const s=state.createStore(storage);
+ assert.equal(JSON.parse(storage.entries['bankshot.db.v3']).version,3);
  const denied=state.createStore({getItem(){throw Error('denied');},setItem(){throw Error('denied');}});
  assert.equal(denied.available,false); denied.recordShot(); denied.recordSuccess({id:1,par:1},1); assert.equal(denied.data.maxUnlocked,2);
  const descriptor=Object.getOwnPropertyDescriptor(globalThis,'localStorage');
@@ -72,94 +72,47 @@ test('legacy authored room clears are archived without unlocking procedural room
 });
 test('records expose canonical rank and clear time while successful progression continues', () => {
  const s=make(); s.recordSuccess({id:1,par:1},1);
- assert.equal(s.data.levelRecords[1].rank,'S'); assert.ok(Number.isFinite(s.data.levelRecords[1].clearedAt));
+ assert.equal(s.data.levelRecords[1].rank,'A'); assert.ok(Number.isFinite(s.data.levelRecords[1].clearedAt));
  assert.equal(s.data.currentLevel,2);
 });
-test('Valorant ranked tier progression, ELO in DB, 2 RR = 1 ELO, demotion shield, and match history', () => {
- const s = make();
- const initial = s.getRankInfo();
- assert.equal(initial.tier, 'Iron');
- assert.equal(initial.division, 1);
- assert.equal(initial.elo, 25);
- assert.equal(initial.rr, 50); // 2 RR = 1 ELO (25 ELO = 50 RR)
- assert.equal(s.data.elo, 25);
- assert.equal(s.data.rank.elo, 25);
 
- // On-par win gives +16 ELO (+11 base + 5 first clear) = +32 RR
- s.recordSuccess({ id: 1, par: 1 }, 1);
- assert.equal(s.data.elo, 41);
- assert.equal(s.data.rank.elo, 41);
- assert.equal(s.data.rank.rr, 82);
-
- // Under-par win gives +20 ELO (+15 base + 5 first clear) = +40 RR
- // 41 + 20 = 61 ELO -> Promotes to Iron II (50-99 ELO), division ELO 11 -> 22 RR
- s.recordSuccess({ id: 2, par: 2 }, 1);
- assert.equal(s.data.elo, 61);
- assert.equal(s.data.rank.tierIndex, 1);
- assert.equal(s.data.rank.rr, 22);
- assert.equal(s.getRankInfo().label, 'IRON II');
-
- // Over-par win gives +13 ELO (+8 base + 5 first clear) = +26 RR
- s.recordSuccess({ id: 3, par: 1 }, 2);
- assert.equal(s.data.elo, 74);
- assert.equal(s.data.rank.rr, 48);
-
- // Failure causes -7 ELO (-14 RR)
- s.recordFailure(4);
- assert.equal(s.data.elo, 67);
- assert.equal(s.data.rank.rr, 34);
-
- // Drop to tier floor (Iron II floor = 50 ELO); demotion shield protects at floor
- for (let i = 0; i < 3; i++) s.recordFailure(4);
- assert.equal(s.data.elo, 50);
- assert.equal(s.data.rank.tierIndex, 1);
- assert.equal(s.data.rank.rr, 0); // clamped at floor on first boundary breach
-
- // Subsequent failure at 0 RR (50 ELO) demotes to previous tier at 38 ELO (76 RR)
- s.recordFailure(4);
- assert.equal(s.data.rank.tierIndex, 0);
- assert.equal(s.data.elo, 38);
- assert.equal(s.data.rank.rr, 76);
- assert.equal(s.getRankInfo().label, 'IRON I');
- assert.equal(s.getRankInfo().peakLabel, 'IRON II');
-
- // Match history recorded with RR and ELO deltas
- assert.ok(s.data.rank.matchHistory.length >= 5);
- assert.equal(s.data.rank.matchHistory[0].outcome, 'fail');
- assert.equal(s.data.rank.matchHistory[0].deltaRR, '-14');
- assert.equal(s.data.rank.matchHistory[0].deltaElo, '-7');
+test('v3 migration resets ranked state once and retains rooms seed and controls',()=>{
+ const storage=memory({'bankshot.db.v2':JSON.stringify({version:2,userSeed:'a1b2c3d4-e5f6-4a1b-8c2d-123456789abc',elo:900,mmr:800,winStreak:5,levelRecords:{1:{bestShots:1,par:1,rank:'S'}},currentLevel:2,roomFailures:{2:3},seenGuide:true,settings:{reducedMotion:true,aimPreview:false},rank:{matchHistory:[{outcome:'win'}]}})});
+ let s=state.createStore(storage);assert.equal(s.data.version,3);assert.equal(s.data.elo,0);assert.equal(s.data.mmr,0);assert.equal(s.data.winStreak,0);assert.equal(s.data.rank.matchHistory.length,0);assert.equal(s.data.currentLevel,2);assert.equal(s.data.currentFailStreak,3);assert.equal(s.data.settings.reducedMotionMode,'on');
+ s.recordSuccess({id:2,par:1},1,1,3,20,false);const elo=s.data.elo;s=state.createStore(storage);assert.equal(s.data.elo,elo);assert.equal(s.data.mmr,6);assert.equal(s.data.winStreak,1);
 });
-
-test('retroactive migration calculates ELO from cleared rooms and persists elo in db', () => {
- const storage = memory();
- // Simulate existing save from user with 12 cleared rooms and no elo field
- const levelRecords = {};
- for (let i = 1; i <= 12; i++) {
-   levelRecords[i] = { bestShots: 1, par: 1, rank: 'S', bestRank: 'S', completions: 1 };
- }
- storage.entries['bankshot.db.v2'] = JSON.stringify({
-   version: 2,
-   userSeed: 'a1b2c3d4-e5f6-4a1b-8c2d-123456789abc',
-   currentLevel: 13,
-   maxUnlocked: 13,
-   levelRecords,
-   roomFailures: {},
-   rank: { tierIndex: 1, rr: 0, peakIndex: 1, matchHistory: [] }
- });
-
- const s = state.createStore(storage);
- // 25 initial + 12 rooms * 16 (11 on-par + 5 first clear) = 217 ELO
- assert.equal(s.data.elo, 217);
- assert.equal(s.data.rank.elo, 217);
- // 217 ELO / 50 = Tier 4 = Bronze II!
- const rank = s.getRankInfo();
- assert.equal(rank.tier, 'Bronze');
- assert.equal(rank.division, 2);
- assert.equal(rank.label, 'BRONZE II');
- assert.equal(rank.rr, 34); // (217 % 50) * 2 = 17 * 2 = 34 RR
-
- // Verify db persistence contains elo
- const persisted = JSON.parse(storage.entries['bankshot.db.v2']);
- assert.equal(persisted.elo, 217);
- assert.equal(persisted.rank.elo, 217);
+test('hard ladder win bases speed boundaries difficulty and convergence are deterministic',()=>{
+ for(const [shots,par,time,first,want] of [[1,2,20,false,8],[1,1,20,false,5],[2,1,20,false,3],[3,1,20,false,2],[4,1,20,false,1],[1,1,5.99,true,9],[1,1,6,false,6],[1,1,12,false,5]]) {const s=make();s.recordSuccess({id:1,par},shots,shots,10,time,first);assert.equal(s.data.elo,want);}
+ const low=make();low.data.elo=100;low.data.mmr=0;low.recordSuccess({id:1,par:1},1,1,3,20,false);assert.equal(low.data.elo,103);
+ const high=make();high.data.elo=100;high.data.mmr=200;high.recordSuccess({id:1,par:1},1,1,3,20,false);assert.equal(high.data.elo,107);
+});
+test('loss convergence is inverse and shield history reports actual delta',()=>{
+ const s=make();s.data.elo=53;s.data.mmr=53;s.recordFailure();assert.equal(s.data.elo,50);assert.equal(s.data.rank.matchHistory[0].deltaElo,'-3');s.recordFailure();assert.equal(s.data.elo,35);assert.equal(s.data.rank.rr,70);assert.equal(s.data.rank.matchHistory[0].deltaElo,'-15');
+ const low=make();low.data.elo=90;low.data.mmr=0;low.recordFailure();assert.equal(low.data.elo,77);
+ const high=make();high.data.elo=90;high.data.mmr=190;high.recordFailure();assert.equal(high.data.elo,84);
+ for(let i=0;i<12;i++)s.recordFailure();assert.equal(s.data.rank.matchHistory.length,8);assert.equal(s.data.elo,0);assert.equal(s.data.rank.matchHistory[0].deltaElo,'0');
+});
+test('streaks reset on outcome change and promotions report latest actual result',()=>{
+ const s=make();s.data.elo=47;s.data.mmr=47;s.recordSuccess({id:1,par:1},1,1,4,20,false);assert.equal(s.data.elo,52);assert.equal(s.getRankInfo().justPromoted,true);assert.equal(s.getRankInfo().promotedTier.label,'IRON II');assert.equal(s.getRankInfo().deltaElo,5);
+ s.recordSuccess({id:2,par:1},1,1,4,20,false);assert.equal(s.data.winStreak,2);s.recordFailure();assert.equal(s.data.winStreak,0);assert.equal(s.data.lossStreak,1);assert.equal(s.getRankInfo().justPromoted,false);
+});
+test('active attempt reload counts one loss and blocks clean bonus cheating',()=>{
+ const storage=memory();let s=state.createStore(storage);s.recordShot();s.recordShot();s=state.createStore(storage);assert.equal(s.data.roomFailures[1],1);assert.equal(s.data.lossStreak,1);assert.equal(s.data.stats.totalShotsFired,2);s=state.createStore(storage);assert.equal(s.data.lossStreak,1);
+ s.recordSuccess({id:1,par:1},1,1,3,20,true);assert.equal(s.data.mmr,6);assert.equal(s.data.activeAttempt,null);
+});
+test('production settings validate types ranges and persist',()=>{
+ const storage=memory();let s=state.createStore(storage);assert.equal(s.setSetting('touchSensitivity',0.5),true);assert.equal(s.setSetting('touchSensitivity',2),true);assert.equal(s.setSetting('touchSensitivity',2.01),false);assert.equal(s.setSetting('touchSensitivity','1'),false);assert.equal(s.toggle('touchSensitivity'),false);assert.equal(s.setSetting('highDpi',false),true);assert.equal(s.setSetting('reducedMotionMode','off'),true);assert.equal(s.setSetting('reducedMotionMode','bogus'),false);s=state.createStore(storage);assert.equal(s.data.settings.touchSensitivity,2);assert.equal(s.data.settings.highDpi,false);assert.equal(s.data.settings.reducedMotionMode,'off');
+});
+test('all streak multiplier steps and difficulty cap affect awarded ELO',()=>{
+ for(const [prior,want] of [[0,8],[1,8],[2,10],[3,11],[8,11]]) {const s=make();s.data.elo=100;s.data.mmr=100;s.data.winStreak=prior;s.recordSuccess({id:1,par:2},1,1,4,20,false);assert.equal(s.data.elo-100,want);}
+ for(const room of [100,1000]) {const s=make();s.data.maxUnlocked=room;s.data.elo=100;s.data.mmr=100;s.recordSuccess({id:room,par:1},1,1,4,20,false);assert.equal(s.data.elo,108);}
+ for(const [prior,want] of [[0,8],[1,9],[2,11],[8,11]]) {const s=make();s.data.elo=140;s.data.mmr=140;s.data.lossStreak=prior;s.recordFailure();assert.equal(140-s.data.elo,want);}
+});
+test('v3 repairs bad ladder fields and retains valid progress without consulting v2',()=>{
+ const storage=memory({'bankshot.db.v3':JSON.stringify({version:3,elo:-5,mmr:'100',winStreak:-2,lossStreak:2,rank:{peakIndex:999,matchHistory:[null,{room:1,outcome:'win',deltaElo:'oops'}]},settings:{touchSensitivity:99,highDpi:'yes',reducedMotionMode:'bad'}}),'bankshot.db.v2':JSON.stringify({version:2,elo:900})});
+ const s=state.createStore(storage);assert.equal(s.data.elo,0);assert.equal(s.data.mmr,0);assert.equal(s.data.lossStreak,2);assert.equal(s.data.rank.matchHistory.length,0);assert.equal(s.data.settings.touchSensitivity,1);assert.equal(s.data.settings.highDpi,true);assert.equal(s.data.settings.reducedMotionMode,'system');
+});
+test('repaired history reconstructs RR from valid actual ELO and rejects unsafe deltas',()=>{
+ const storage=memory({'bankshot.db.v3':JSON.stringify({version:3,rank:{matchHistory:[{room:1,outcome:'win',deltaElo:'+4',deltaRR:'oops'},{room:1,outcome:'fail',deltaElo:'99999999999999999999999999999999999'}]}})});
+ const s=state.createStore(storage);assert.equal(s.data.rank.matchHistory.length,1);assert.equal(s.getRankInfo().deltaRR,8);assert.equal(s.data.rank.matchHistory[0].deltaRR,'+8');
 });

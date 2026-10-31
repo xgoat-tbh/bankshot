@@ -72,6 +72,7 @@ export class Renderer {
     this.x = 0;
     this.y = 0;
     this.dpr = 1;
+    this.highDpi = true;
     this.version = -1;
     this.loadedAt = 0;
     this.tracing = true;
@@ -87,6 +88,8 @@ export class Renderer {
     this.mode = mode;
     this.loadedAt = now;
     this.ghosts = [];
+    this.embers = [];
+    this.lastEmberTime = -Infinity;
     this.lastGhostTime = -Infinity;
     this.wonAt = null;
     this.goalFlashed = false;
@@ -106,7 +109,7 @@ export class Renderer {
     this.height = rect.height;
     this.left = rect.left;
     this.top = rect.top;
-    this.dpr = Math.min(window.devicePixelRatio || 1, W.dprCap);
+    this.dpr = this.highDpi ? Math.min(window.devicePixelRatio || 1, W.dprCap) : 1;
     this.canvas.width = Math.round(this.width * this.dpr);
     this.canvas.height = Math.round(this.height * this.dpr);
     const L = CONFIG.layout;
@@ -224,11 +227,13 @@ export class Renderer {
       }
     }
     ctx.globalAlpha = 1;
+    this.drawElements(ctx, now);
     this.drawGoal(ctx, now);
     if (world.status === 'ready' && input.aiming && settings.aimPreview) this.drawAim(ctx, world, input.angle, input.dragging, world.level.id);
     const x = world.px + (world.x - world.px) * alpha;
     const y = world.py + (world.y - world.py) * alpha;
     const angle = this.reducedMotion ? 0 : world.previousAngle + (world.angle - world.previousAngle) * alpha;
+    this.drawEmbers(ctx, now, x, y);
     if (world.status === 'moving' && !this.reducedMotion) {
       if (world.time - this.lastGhostTime >= 1 / 30) {
         this.ghosts.push({ x: world.px, y: world.py, angle: world.previousAngle });
@@ -256,6 +261,24 @@ export class Renderer {
         this.goalFlashed = true;
       }
       const progress = (now - this.wonAt) / 0.3;
+      const burst = (now - this.wonAt) / 0.7;
+      if (this.world.shots === 1 && burst < 1) {
+        ctx.save();
+        ctx.strokeStyle = C.fireGold;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = this.reducedMotion ? 0.65 : 1 - burst;
+        const expansion = this.reducedMotion ? 0.2 : burst;
+        ctx.beginPath();
+        ctx.arc(this.goalX, this.goalY, 24 + expansion * 100, 0, TAU);
+        ctx.stroke();
+        for (let i = 0; i < 12; i++) {
+          const angle = i * TAU / 12;
+          const inner = 18 + expansion * 55;
+          const outer = inner + 18 * (1 - expansion);
+          segment(ctx, this.goalX + Math.cos(angle) * inner, this.goalY + Math.sin(angle) * inner, this.goalX + Math.cos(angle) * outer, this.goalY + Math.sin(angle) * outer);
+        }
+        ctx.restore();
+      }
       if (!this.reducedMotion && progress < 1) {
         ctx.save();
         ctx.translate(this.goalX, this.goalY);
@@ -276,6 +299,104 @@ export class Renderer {
     segment(ctx, this.goalX - size, this.goalY, this.goalX + size, this.goalY);
     segment(ctx, this.goalX, this.goalY - size, this.goalX, this.goalY + size);
     ctx.globalAlpha = 1;
+  }
+
+  drawElements(ctx, now) {
+    const world = this.world;
+    ctx.save();
+    for (const wall of world.movingWalls) {
+      if (!wall.active) continue;
+      ctx.strokeStyle = C.movingWhite;
+      ctx.globalAlpha = 0.22;
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 7]);
+      for (const point of [wall.baseA, wall.baseB]) segment(ctx, point[0] - wall.delta[0], point[1] - wall.delta[1], point[0] + wall.delta[0], point[1] + wall.delta[1]);
+      ctx.setLineDash([]);
+      ctx.globalAlpha = this.reducedMotion ? 1 : 0.75 + Math.sin(now * 3) * 0.2;
+      ctx.shadowColor = C.movingWhite;
+      ctx.shadowBlur = 6;
+      drawWall(ctx, wall, 1, C.movingWhite);
+    }
+    for (const bumper of world.bumpers) {
+      const sinceHit = world.time - bumper.hitAt;
+      const scale = !this.reducedMotion && sinceHit < 0.2 ? 1 + (1 - sinceHit / 0.2) * 0.2 : 1;
+      ctx.save();
+      ctx.translate(bumper.x, bumper.y);
+      ctx.scale(scale, scale);
+      ctx.strokeStyle = C.bumperOrange;
+      ctx.shadowColor = C.bumperOrange;
+      ctx.shadowBlur = sinceHit < 0.2 ? 16 : 6;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      for (const radius of [bumper.radius, bumper.radius * 0.68]) {
+        ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU); ctx.stroke();
+      }
+      for (let i = 0; i < 12; i++) {
+        const angle = i * TAU / 12;
+        segment(ctx, Math.cos(angle) * (bumper.radius + 4), Math.sin(angle) * (bumper.radius + 4), Math.cos(angle) * (bumper.radius + 9), Math.sin(angle) * (bumper.radius + 9));
+      }
+      ctx.restore();
+    }
+    for (const pair of world.portals) for (const portal of [pair.A, pair.B]) {
+      ctx.save();
+      ctx.translate(portal.x, portal.y);
+      ctx.rotate(Math.atan2(portal.ny, portal.nx));
+      ctx.strokeStyle = C.portalCyan;
+      ctx.fillStyle = C.portalCyan;
+      ctx.shadowColor = C.portalCyan;
+      ctx.shadowBlur = 10;
+      ctx.globalAlpha = 0.85;
+      ctx.lineWidth = 2;
+      for (const scale of [1, 0.72]) {
+        ctx.beginPath(); ctx.ellipse(0, 0, portal.radius * 0.4 * scale, portal.radius * scale, 0, 0, TAU); ctx.stroke();
+      }
+      for (let i = 0; i < 8; i++) {
+        const angle = i * TAU / 8 + (this.reducedMotion ? 0 : now);
+        ctx.beginPath(); ctx.arc(Math.cos(angle) * portal.radius * 0.22, Math.sin(angle) * portal.radius * 0.6, 1.6, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+    }
+    for (const well of world.gravityWells) {
+      ctx.strokeStyle = C.gravityPurple;
+      ctx.shadowColor = C.gravityPurple;
+      ctx.shadowBlur = 4;
+      ctx.lineWidth = 1;
+      for (const ratio of [0.25, 0.5, 0.75, 1]) {
+        ctx.globalAlpha = 0.14 + (1 - ratio) * 0.25;
+        ctx.beginPath(); ctx.arc(well.x, well.y, well.radius * ratio, 0, TAU); ctx.stroke();
+      }
+      ctx.globalAlpha = 0.65;
+      for (let i = 0; i < 8; i++) {
+        const angle = i * TAU / 8;
+        const radius = well.radius * 0.8;
+        const x = well.x + Math.cos(angle) * radius;
+        const y = well.y + Math.sin(angle) * radius;
+        segment(ctx, x, y, x + Math.cos(angle - 0.4) * 9, y + Math.sin(angle - 0.4) * 9);
+        segment(ctx, x, y, x + Math.cos(angle + 0.4) * 9, y + Math.sin(angle + 0.4) * 9);
+      }
+    }
+    ctx.restore();
+  }
+
+  drawEmbers(ctx, now, x, y) {
+    if (this.reducedMotion || (this.world.winStreak ?? 0) < 3) { this.embers.length = 0; return; }
+    if (this.world.status === 'moving' && now - this.lastEmberTime >= 1 / 60) {
+      this.embers.push({ x, y, r: 3 + (this.embers.length % 3), opacity: 0.8, born: now });
+      if (this.embers.length > 32) this.embers.shift();
+      this.lastEmberTime = now;
+    }
+    this.embers = this.embers.filter(ember => now - ember.born < 0.45);
+    ctx.save();
+    ctx.shadowBlur = 12;
+    for (let i = 0; i < this.embers.length; i++) {
+      const ember = this.embers[i];
+      const age = (now - ember.born) / 0.45;
+      ctx.fillStyle = i % 2 ? C.fireAmber : C.fireGold;
+      ctx.shadowColor = ctx.fillStyle;
+      ctx.globalAlpha = ember.opacity * (1 - age);
+      ctx.beginPath(); ctx.arc(ember.x, ember.y - age * 12, ember.r * (1 - age), 0, TAU); ctx.fill();
+    }
+    ctx.restore();
   }
 
   drawPuck(ctx, x, y, rotation, atRest, aimAngle = 0, isAiming = false, opacity = 1) {
@@ -312,6 +433,18 @@ export class Renderer {
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
     ctx.save();
+    if (path.hasPortal) {
+      ctx.lineWidth = V.aimWidth;
+      ctx.setLineDash(AIM_DASH);
+      for (let i = 0; i < path.segments.length; i++) {
+        const ray = path.segments[i];
+        ctx.strokeStyle = i ? C.portalCyan : C.bone;
+        ctx.globalAlpha = Math.max(0.15, 0.6 - i * 0.1);
+        segment(ctx, ray.x0, ray.y0, ray.x1, ray.y1);
+      }
+      ctx.restore();
+      return;
+    }
     const primary = ctx.createLinearGradient(path.x0, path.y0, path.x1, path.y1);
     primary.addColorStop(0, 'rgba(233,230,223,0.65)');
     primary.addColorStop(1, 'rgba(233,230,223,0.28)');

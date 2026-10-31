@@ -18,16 +18,16 @@ function randomFor(seed, index) {
 
 function material(n, random) {
   const value = random();
-  if (n <= 10) return 'solid';
-  if (n <= 20) return value < 0.75 ? 'solid' : 'rubber';
+  if (n < 10) return 'solid';
+  if (n < 20) return value < 0.75 ? 'solid' : 'rubber';
   if (n <= 30) return value < 0.6 ? 'solid' : value < 0.8 ? 'rubber' : 'glass';
   return value < 0.5 ? 'solid' : value < 0.75 ? 'rubber' : 'glass';
 }
 
-function candidate(index, seed, fallback = false, modifier = 0) {
+function candidate(index, seed, fallback = false) {
   const n = index;
   const random = randomFor(seed, fallback ? 0 : index);
-  const count = clamp(2 + Math.floor(n / 5) + modifier, 2, 8);
+  const count = clamp(2 + Math.floor(n / 5), 2, 8);
   const w = clamp(48 - Math.floor(n / 10) * 2, 32, 48);
   const px = 190 + random() * 90;
   const py = 390 + random() * 70;
@@ -61,7 +61,7 @@ function candidate(index, seed, fallback = false, modifier = 0) {
   }
   const boundary = CONFIG.world.boundary.map((point, i, points) => wall([...point], [...points[(i + 1) % points.length]]));
   const hazards = [];
-  if (n > 30) {
+  if (n >= 30) {
     const hazardCount = 1 + Math.floor(random() * 2);
     for (let i = 0; i < hazardCount; i++) {
       const x = 320 + i * 340 + random() * 60;
@@ -81,6 +81,18 @@ function candidate(index, seed, fallback = false, modifier = 0) {
   let dy = reflectedY - startY;
   if (mirrorX) dx = -dx;
   if (mirrorY) dy = -dy;
+  const vector = ([x, y]) => [mirrorX ? -x : x, mirrorY ? -y : y];
+  const portal = (x, y, nx, ny) => {
+    const [tx, ty] = transform([x, y]);
+    const [tnx, tny] = vector([nx, ny]);
+    return { x: tx, y: ty, nx: tnx, ny: tny, radius: 24 };
+  };
+  const movingWalls = n >= 15 ? [{ a: transform([430, 660]), b: transform([530, 660]), delta: vector([35, 0]), freq: 0.8 + random() * 0.5, phase: random() * Math.PI * 2, mat: 'solid', active: true }] : [];
+  const [bumperX, bumperY] = transform([790 + random() * 35, 660]);
+  const bumpers = n >= 25 ? [{ x: bumperX, y: bumperY, radius: 25, restitution: 1.25 }] : [];
+  const portals = n >= 35 ? [{ id: `gate-${n}`, A: portal(140, 650, 1, 0), B: portal(1020, 570, -1, 0), cooldown: 0 }] : [];
+  const [wellX, wellY] = transform([1030, 650]);
+  const gravityWells = n >= 50 ? [{ x: wellX, y: wellY, radius: 140, strength: 2200 }] : [];
   return {
     id: n, name: `Bank ${n}`, puck: transform([px, py]),
     goal: [[gx - w + c, gy - h], [gx + w, gy - h], [gx + w, gy + h - c], [gx + w - c, gy + h], [gx - w, gy + h], [gx - w, gy - h + c]].map(transform),
@@ -88,6 +100,7 @@ function candidate(index, seed, fallback = false, modifier = 0) {
     solution: preparation.concat({ angleDeg: Math.atan2(dy, dx) * 180 / Math.PI, power: 0.7 }),
     aimLength: clamp(2400 - n * 25, 450, 2400),
     difficulty: Math.min(1, n / 50), generation: { fallback, attempts: 1 },
+    movingWalls, bumpers, portals, gravityWells,
   };
 }
 
@@ -95,33 +108,25 @@ function candidate(index, seed, fallback = false, modifier = 0) {
 export function generateRoom(levelIndex, userSeed, options = {}) {
   if (!Number.isSafeInteger(levelIndex) || levelIndex < 1) throw new RangeError('Room index must be a positive safe integer');
   const attempts = clamp(Math.floor(options.maxAttempts ?? 8), 0, 29);
-  let modifier = 0;
-  if (options.difficultyModifier !== undefined) {
-    modifier = Math.max(-2, Math.min(2, Math.floor(options.difficultyModifier)));
-  } else if (options.performanceRatio !== undefined) {
-    const ratio = options.performanceRatio;
-    modifier = ratio <= 0.95 ? 2 : ratio <= 1.10 ? 1 : ratio > 1.40 ? -1 : 0;
-  }
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const room = candidate(levelIndex, `${userSeed}:${attempt}`, false, modifier);
+    const room = candidate(levelIndex, `${userSeed}:${attempt}`);
     room.generation.attempts = attempt + 1;
     if (simulateSolution(room).status === 'won') return room;
   }
   // Same reserved corridor and scaling, with fixed coordinates from a known seed.
   // Physics verification still runs: no unchecked room can escape this function.
-  const room = candidate(levelIndex, 'bankshot-safe-corridor', true, modifier);
+  const room = candidate(levelIndex, 'bankshot-safe-corridor', true);
   room.generation.attempts = attempts + 1;
   if (simulateSolution(room).status !== 'won') throw new Error('Verified bank corridor violated physics assumptions');
   return room;
 }
 
 /** LRU bounds memory independently of the player's highest unlocked room. */
-export function createRoomProvider(seed, capacity = 32, getPerfRatio = null) {
+export function createRoomProvider(seed, capacity = 32) {
   const rooms = new Map();
   const limit = clamp(Math.floor(capacity) || 32, 1, 128);
   const getRoom = (index) => {
-    const options = getPerfRatio ? { performanceRatio: getPerfRatio() } : {};
-    const room = rooms.get(index) ?? generateRoom(index, seed, options);
+    const room = rooms.get(index) ?? generateRoom(index, seed);
     rooms.delete(index);
     rooms.set(index, room);
     if (rooms.size > limit) rooms.delete(rooms.keys().next().value);

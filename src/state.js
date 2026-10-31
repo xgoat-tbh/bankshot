@@ -1,4 +1,6 @@
-const KEY = 'bankshot.db.v2';
+const KEY = 'bankshot.db.v3';
+const clamp = (n,lo,hi) => Math.min(hi,Math.max(lo,n));
+const signed = n => n > 0 ? `+${n}` : `${n}`;
 const GRADES = ['S', 'A', 'B', 'C', 'D'];
 export const TIERS = ['Iron', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Ascendant', 'Immortal', 'Radiant'];
 export const TIER_COLORS = {
@@ -59,11 +61,8 @@ export function calculateTriesBudget(par, recentRatios = [], failStreak = 0) {
   return base + Math.floor(count(failStreak) / 3);
 }
 
-export function calculateRank(shots, par, triesUsed = shots, maxTries = Infinity, failStreak = 0) {
-  if (shots <= par) return 'S';
-  if (shots <= par + 1) return 'A';
-  if (shots <= par + 2) return 'B';
-  return triesUsed >= maxTries || failStreak > 0 ? 'D' : 'C';
+export function calculateRank(shots, par) {
+  return shots < par ? 'S' : shots === par ? 'A' : shots === par+1 ? 'B' : shots === par+2 ? 'C' : 'D';
 }
 export const rank = calculateRank;
 
@@ -73,30 +72,35 @@ export function createStore(storage) {
     try { storage = globalThis.localStorage; } catch { available = false; }
   }
   const data = {
-    version: 2, userSeed: uuid(), currentLevel: 1, maxUnlocked: 1, currentFailStreak: 0,
-    elo: 25,
+    version: 3, userSeed: uuid(), currentLevel: 1, maxUnlocked: 1, currentFailStreak: 0,
+    elo: 0, mmr: 0, winStreak: 0, lossStreak: 0, activeAttempt: null,
     stats: { totalShotsFired: 0, levelsCompleted: 0, sRanks: 0, aRanks: 0, bRanks: 0, cRanks: 0, dRanks: 0, recentShots: [], completedPar: 0 },
     rank: {
       tierIndex: 0, // Iron 1
-      elo: 25,
-      rr: 50,       // 2 RR = 1 ELO (25 ELO = 50 RR)
-      peakElo: 25,
+      elo: 0,
+      rr: 0,       // 2 RR = 1 ELO
+      peakElo: 0,
       peakIndex: 0,
       matchHistory: [] // list of last 8 matches
     },
     levelRecords: {}, roomFailures: {}, seenGuide: false,
-    settings: { reducedMotion: false, aimPreview: true },
+    settings: { reducedMotion: false, reducedMotionMode: 'system', aimPreview: true, touchSensitivity: 1, highDpi: true },
   };
   function read(key) {
     try { const raw = storage?.getItem(key); return raw ? JSON.parse(raw) : null; }
     catch { return null; }
   }
   const saved = read(KEY);
-  const source = object(saved) && saved.version === 2 ? saved : null;
+  const isV3 = object(saved) && saved.version === 3;
+  const v2 = isV3 ? null : read('bankshot.db.v2');
+  const source = isV3 ? saved : object(v2) && v2.version === 2 ? v2 : null;
   const legacy = source?.legacy ?? read('bankshot.progress.v1');
   if (object(legacy)) data.legacy = legacy;
   const settings = source?.settings ?? legacy?.settings;
-  for (const key of Object.keys(data.settings)) if (typeof settings?.[key] === 'boolean') data.settings[key] = settings[key];
+  for (const key of ['reducedMotion','aimPreview','highDpi']) if (typeof settings?.[key] === 'boolean') data.settings[key] = settings[key];
+  if (Number.isFinite(settings?.touchSensitivity) && settings.touchSensitivity >= 0.5 && settings.touchSensitivity <= 2) data.settings.touchSensitivity = settings.touchSensitivity;
+  if (['system','on','off'].includes(settings?.reducedMotionMode)) data.settings.reducedMotionMode = settings.reducedMotionMode;
+  else if (settings?.reducedMotion === true) data.settings.reducedMotionMode = 'on';
   if (source) {
     if (typeof source.userSeed === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(source.userSeed)) data.userSeed = source.userSeed;
     data.seenGuide = source.seenGuide === true;
@@ -118,88 +122,44 @@ export function createStore(storage) {
     data.stats.completedPar = count(source.stats?.completedPar);
     if (Array.isArray(source.stats?.recentShots)) data.stats.recentShots = source.stats.recentShots.filter(n=>Number.isFinite(n)&&n>0).slice(-10);
 
-    // ELO and Rank Loading / Retroactive Migration
-    const sourceElo = source.elo ?? source.rank?.elo;
-    if (typeof sourceElo === 'number' && Number.isFinite(sourceElo)) {
-      data.elo = Math.max(0, Math.floor(sourceElo));
-    } else if (object(source.levelRecords) && Object.keys(source.levelRecords).length > 0) {
-      // Retroactive migration: player cleared rooms without ELO in database
-      let migratedElo = 25;
-      for (const record of Object.values(source.levelRecords)) {
-        const s = positive(record.bestShots) ? record.bestShots : 1;
-        const p = positive(record.par) ? record.par : 1;
-        const gain = (s < p ? 15 : s === p ? 11 : 8) + 5;
-        migratedElo += gain;
-      }
-      data.elo = migratedElo;
-    } else if (source.rank && typeof source.rank.tierIndex === 'number') {
-      data.elo = (count(source.rank.tierIndex) * 50) + Math.floor(count(source.rank.rr) / 2);
-    }
-    const rankCalc = getRankFromElo(data.elo);
-    data.rank.elo = data.elo;
-    data.rank.tierIndex = rankCalc.tierIndex;
-    data.rank.rr = rankCalc.rr;
-    data.rank.peakElo = Math.max(data.elo, count(source.rank?.peakElo));
-    data.rank.peakIndex = Math.max(rankCalc.tierIndex, count(source.rank?.peakIndex));
-
-    if (Array.isArray(source.rank?.matchHistory)) {
-      data.rank.matchHistory = source.rank.matchHistory.slice(-8).map(m => {
-        if (!m || typeof m !== 'object') return m;
-        const delta = typeof m.delta === 'string' ? m.delta : '+0';
-        const rawNum = parseInt(delta, 10);
-        const eloVal = Number.isFinite(rawNum) ? Math.round(rawNum / 2) : 0;
-        const deltaRR = typeof m.deltaRR === 'string' ? m.deltaRR : delta;
-        const deltaElo = typeof m.deltaElo === 'string' ? m.deltaElo : `${eloVal > 0 ? '+' : ''}${eloVal}`;
-        return {
-          ...m,
-          delta: deltaRR,
-          deltaRR,
-          deltaElo
-        };
-      });
+    if (isV3) {
+      data.elo = count(source.elo ?? source.rank?.elo);
+      data.mmr = count(source.mmr);
+      data.winStreak = count(source.winStreak);
+      data.lossStreak = data.winStreak ? 0 : count(source.lossStreak);
+      const info = getRankFromElo(data.elo);
+      Object.assign(data.rank,{elo:data.elo,tierIndex:info.tierIndex,rr:info.rr,peakElo:Math.max(data.elo,count(source.rank?.peakElo)),peakIndex:Math.max(info.tierIndex,Math.min(24,count(source.rank?.peakIndex)))});
+      if(Array.isArray(source.rank?.matchHistory)) data.rank.matchHistory = source.rank.matchHistory.filter(m=>object(m) && ['win','fail'].includes(m.outcome) && positive(m.room) && typeof m.deltaElo === 'string' && /^[+-]?\d+$/.test(m.deltaElo) && Number.isSafeInteger(Number(m.deltaElo)*2)).slice(0,8).map(m=>({...m,deltaElo:signed(Number(m.deltaElo)),deltaRR:signed(Number(m.deltaElo)*2),delta:signed(Number(m.deltaElo)*2)}));
+      if(object(source.activeAttempt) && positive(source.activeAttempt.room) && source.activeAttempt.room <= data.maxUnlocked && positive(source.activeAttempt.shots)) data.activeAttempt={room:source.activeAttempt.room,shots:source.activeAttempt.shots};
     }
   }
-
-  function applyElo(deltaElo, room, outcome, shots, par) {
-    const currentTier = Math.min(24, Math.floor(data.elo / 50));
-    const tierFloorElo = currentTier * 50;
-
-    if (deltaElo > 0) {
-      data.elo += deltaElo;
-    } else if (deltaElo < 0) {
-      if (data.elo > tierFloorElo) {
-        // Demotion protection at division floor
-        data.elo = Math.max(tierFloorElo, data.elo + deltaElo);
-      } else if (currentTier > 0) {
-        // Demote to previous tier with landing buffer
-        data.elo = Math.max(0, tierFloorElo - 12);
-      } else {
-        data.elo = Math.max(0, data.elo + deltaElo);
-      }
-    }
-
-    const rank = getRankFromElo(data.elo);
-    data.rank.elo = data.elo;
-    data.rank.tierIndex = rank.tierIndex;
-    data.rank.rr = rank.rr;
-    data.rank.peakElo = Math.max(data.rank.peakElo ?? 0, data.elo);
-    data.rank.peakIndex = Math.max(data.rank.peakIndex ?? 0, rank.tierIndex);
-
-    const deltaRR = deltaElo * 2;
-    data.rank.matchHistory.unshift({
-      room,
-      delta: deltaRR > 0 ? `+${deltaRR}` : `${deltaRR}`,
-      deltaRR: deltaRR > 0 ? `+${deltaRR}` : `${deltaRR}`,
-      deltaElo: deltaElo > 0 ? `+${deltaElo}` : `${deltaElo}`,
-      outcome,
-      shots,
-      par,
-      tierIndex: rank.tierIndex,
-      elo: data.elo,
-      rr: rank.rr,
-      date: Date.now()
-    });
-    data.rank.matchHistory = data.rank.matchHistory.slice(0, 8);
+  let justPromoted = false;
+  let promotedTier = null;
+  const convergence = () => clamp(1+(data.mmr-data.elo)/100,0.6,1.4);
+  function applyElo(deltaElo, room, outcome, shots, par, roomTime = null) {
+    const oldElo = data.elo;
+    const oldTier = getRankFromElo(oldElo).tierIndex;
+    const floor = oldTier*50;
+    if(deltaElo > 0) data.elo = Math.min(Number.MAX_SAFE_INTEGER,data.elo+deltaElo);
+    else if(deltaElo < 0) data.elo = data.elo > floor ? Math.max(floor,data.elo+deltaElo) : oldTier > 0 ? floor-15 : 0;
+    const actual = data.elo-oldElo;
+    const info = getRankFromElo(data.elo);
+    Object.assign(data.rank,{elo:data.elo,tierIndex:info.tierIndex,rr:info.rr,peakElo:Math.max(data.rank.peakElo,data.elo),peakIndex:Math.max(data.rank.peakIndex,info.tierIndex)});
+    justPromoted = info.tierIndex > oldTier;
+    promotedTier = justPromoted ? getRankFromIndex(info.tierIndex) : null;
+    data.rank.matchHistory.unshift({room,outcome,shots,par,roomTime,delta:signed(actual*2),deltaRR:signed(actual*2),deltaElo:signed(actual),tierIndex:info.tierIndex,elo:data.elo,rr:info.rr,date:Date.now()});
+    data.rank.matchHistory = data.rank.matchHistory.slice(0,8);
+  }
+  function fail(index) {
+    data.roomFailures[index]=(data.roomFailures[index]??0)+1;
+    data.winStreak=0; data.lossStreak++;
+    const multiplier = data.lossStreak===1 ? 1 : data.lossStreak===2 ? 1.15 : 1.35;
+    // Inverse convergence makes low hidden MMR penalize losses more heavily.
+    const penalty=Math.max(1,Math.round(8*multiplier/convergence()));
+    applyElo(-penalty,index,'fail',data.activeAttempt?.room===index ? data.activeAttempt.shots : 0,0);
+    // Hidden rating follows unscaled performance rather than visible shield deltas.
+    data.mmr=Math.max(0,data.mmr-8);
+    if(data.activeAttempt?.room===index) data.activeAttempt=null;
   }
 
   function refresh() {
@@ -213,6 +173,7 @@ export function createStore(storage) {
     catch { available = false; return false; }
   }
   const canPlay = index => positive(index) && index <= data.maxUnlocked;
+  if (data.activeAttempt) fail(data.activeAttempt.room);
   refresh(); save();
   return {
     data,
@@ -221,21 +182,24 @@ export function createStore(storage) {
     unlocked: () => data.maxUnlocked,
     select(index) { if (!canPlay(index)) return false; data.currentLevel = index; refresh(); save(); return true; },
     calculateBudget(index, par) { return calculateTriesBudget(par, data.stats.recentShots, data.roomFailures[index] ?? 0); },
-    recordShot() { data.stats.totalShotsFired++; save(); },
+    recordShot() {
+      data.stats.totalShotsFired++;
+      if(data.activeAttempt && data.activeAttempt.room !== data.currentLevel) fail(data.activeAttempt.room);
+      data.activeAttempt = {room:data.currentLevel,shots:(data.activeAttempt?.shots??0)+1};
+      save();
+    },
     recordFailure(index = data.currentLevel) {
       if (!canPlay(index)) return false;
-      data.roomFailures[index] = (data.roomFailures[index] ?? 0) + 1;
-      // Budget exhaustion failure: -7 ELO = -14 RR
-      applyElo(-7, index, 'fail', 0, 0);
+      fail(index);
       refresh(); save(); return true;
     },
-    recordSuccess(level, shots, triesUsed = shots, maxTries) {
+    recordSuccess(level, shots, triesUsed = shots, maxTries, roomTime = Infinity, isFirstAttempt = true) {
       const index = typeof level === 'number' ? level : level?.id;
       const par = typeof level === 'number' ? (data.levelRecords[index]?.par ?? 1) : level?.par;
       if (!canPlay(index) || !positive(par) || !positive(shots) || !positive(triesUsed)) return false;
-      const grade = calculateRank(shots, par, triesUsed, maxTries ?? calculateTriesBudget(par,data.stats.recentShots,data.roomFailures[index]), data.roomFailures[index] ?? 0);
+      const grade = calculateRank(shots, par);
       const previous = data.levelRecords[index];
-      const isFirstClear = !previous;
+      const firstAttempt = isFirstAttempt === true && !(data.roomFailures[index] > 0);
       data.levelRecords[index] = { bestShots: Math.min(previous?.bestShots ?? Infinity, shots), bestRank: previous && GRADES.indexOf(previous.bestRank)<GRADES.indexOf(grade) ? previous.bestRank : grade, par, completions: (previous?.completions ?? 0)+1 };
       data.stats.recentShots.push(shots/par); data.stats.recentShots = data.stats.recentShots.slice(-10);
       data.stats.completedPar += par;
@@ -245,19 +209,28 @@ export function createStore(storage) {
       data.maxUnlocked = Math.max(data.maxUnlocked, Math.min(Number.MAX_SAFE_INTEGER,index+1));
       data.currentLevel = Math.min(Number.MAX_SAFE_INTEGER,index+1);
       
-      // Calculate Valorant ELO Gain: 2 RR = 1 ELO
-      // Under par: +15 ELO (+30 RR)
-      // On par: +11 ELO (+22 RR)
-      // Over par: +8 ELO (+16 RR)
-      // First-time clear bonus: +5 ELO (+10 RR)
-      const baseElo = shots < par ? 15 : shots === par ? 11 : 8;
-      const firstClearBonus = isFirstClear ? 5 : 0;
-      const deltaElo = baseElo + firstClearBonus;
-      applyElo(deltaElo, index, 'win', shots, par);
+      const base = {S:9,A:6,B:4,C:2,D:1}[grade];
+      const speed = Number.isFinite(roomTime) && roomTime>=0 ? roomTime<6 ? 2 : roomTime<12 ? 1 : 0 : 0;
+      const performance=base+speed+(firstAttempt ? 2 : 0);
+      data.winStreak++; data.lossStreak=0;
+      const streak = data.winStreak===1 ? 1 : data.winStreak===2 ? 1.1 : data.winStreak===3 ? 1.25 : 1.4;
+      const difficulty=clamp(0.85+index/100*0.45,0.85,1.3);
+      const gain=Math.max(1,Math.round(performance*difficulty*streak*convergence()));
+      applyElo(gain,index,'win',shots,par,Number.isFinite(roomTime)&&roomTime>=0 ? roomTime : null);
+      data.mmr=Math.min(Number.MAX_SAFE_INTEGER,data.mmr+performance);
+      if(data.activeAttempt?.room===index) data.activeAttempt=null;
 
       refresh(); save(); return grade;
     },
-    toggle(key) { if (!Object.hasOwn(data.settings,key)) return false; data.settings[key] = !data.settings[key]; save(); return true; },
+    setSetting(key,value) {
+      const valid = ['aimPreview','highDpi','reducedMotion'].includes(key) ? typeof value === 'boolean' : key === 'touchSensitivity' ? Number.isFinite(value)&&value>=0.5&&value<=2 : key === 'reducedMotionMode' ? ['system','on','off'].includes(value) : false;
+      if(!valid) return false;
+      data.settings[key]=value;
+      if(key==='reducedMotion') data.settings.reducedMotionMode=value?'on':'off';
+      if(key==='reducedMotionMode') data.settings.reducedMotion=value==='on';
+      save(); return true;
+    },
+    toggle(key) { if(typeof data.settings[key] !== 'boolean') return false; return this.setSetting(key,!data.settings[key]); },
     markGuideSeen() { data.seenGuide = true; save(); },
     getPerformanceRatio() {
       const { recentShots } = data.stats;
@@ -268,6 +241,12 @@ export function createStore(storage) {
       const peak = getRankFromIndex(data.rank.peakIndex);
       return {
         ...info,
+        mmr: data.mmr, winStreak: data.winStreak, lossStreak: data.lossStreak,
+        justPromoted, promotedTier,
+        deltaElo: Number(data.rank.matchHistory[0]?.deltaElo ?? 0),
+        deltaRR: Number(data.rank.matchHistory[0]?.deltaRR ?? 0),
+        lastDeltaElo: Number(data.rank.matchHistory[0]?.deltaElo ?? 0),
+        lastDeltaRR: Number(data.rank.matchHistory[0]?.deltaRR ?? 0),
         elo: data.elo,
         peakElo: data.rank.peakElo ?? data.elo,
         peakLabel: peak.label,
