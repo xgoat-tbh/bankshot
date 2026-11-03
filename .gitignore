@@ -17,4 +17,6 @@ Thumbs.db
 
 # Agent workspaces & scratch directories
 .agents/
+!.agents/rules/
+!.agents/rules/**
 scratch/

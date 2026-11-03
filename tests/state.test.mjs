@@ -147,3 +147,18 @@ test('repaired history reconstructs RR from valid actual ELO and rejects unsafe 
  const storage=memory({'bankshot.db.v3':JSON.stringify({version:3,rank:{matchHistory:[{room:1,outcome:'win',deltaElo:'+4',deltaRR:'oops'},{room:1,outcome:'fail',deltaElo:'99999999999999999999999999999999999'}]}})});
  const s=state.createStore(storage);assert.equal(s.data.rank.matchHistory.length,1);assert.equal(s.getRankInfo().deltaRR,8);assert.equal(s.data.rank.matchHistory[0].deltaRR,'+8');
 });
+
+test('new accounts with zero or few online races evaluate as UNRANKED placements', () => {
+  const unrankedFresh = state.getRankFromElo(1000, 0);
+  assert.equal(unrankedFresh.tier, 'Unranked');
+  assert.equal(unrankedFresh.label, 'UNRANKED');
+  assert.equal(unrankedFresh.sublabel, 'PLACEMENT (0/5)');
+
+  const unrankedPartial = state.getRankFromElo(1050, 3);
+  assert.equal(unrankedPartial.tier, 'Unranked');
+  assert.equal(unrankedPartial.sublabel, 'PLACEMENT (3/5)');
+
+  const calibrated = state.getRankFromElo(1000, 5);
+  assert.notEqual(calibrated.tier, 'Unranked');
+  assert.equal(calibrated.tier, 'Ascendant');
+});

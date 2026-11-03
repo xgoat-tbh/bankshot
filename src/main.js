@@ -256,7 +256,10 @@ export function mountGame(root) {
     else if (name === 'back') back();
     else if (name === 'pause') togglePause();
     else if (name === 'resume') resume();
-    else if (name === 'restart') restart();
+    else if (name === 'restart') {
+      if (ui.turnsExceededOpen) ui.closeTurnsExceeded?.();
+      else restart();
+    }
     else if (name === 'next') startLevel(levelIndex + 1);
     else if (name === 'guide') openGuide();
     else if (name === 'guide-close') closeGuide();
@@ -288,7 +291,23 @@ export function mountGame(root) {
         accumulator -= CONFIG.physics.step;
         if (world.status === 'won') { complete(); accumulator = 0; break; }
         if (world.lastOutcome === 'hazard' && world.failures > 0) { startLevel(levelIndex, 'hazard'); break; }
-        if (world.status === 'ready' && world.shots >= world.budget) { startLevel(levelIndex, 'budget'); break; }
+        if (world.status === 'ready' && world.shots >= world.budget) {
+          phase = 'turns-exceeded';
+          input.enabled = false;
+          input.cancel();
+          const currentRoom = getRoom(levelIndex);
+          ui.showTurnsExceeded({
+            level: currentRoom,
+            shots: world.shots,
+            par: currentRoom.par,
+            onRetry: () => {
+              phase = 'game';
+              input.enabled = true;
+              startLevel(levelIndex, 'budget');
+            }
+          });
+          break;
+        }
       }
       ui.update(world, input);
     }

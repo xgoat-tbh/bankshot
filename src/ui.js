@@ -15,7 +15,14 @@ const arenaEdges = CONFIG.world.boundary.map(([x, y], index, points) => {
     const length = Math.hypot(nextX - x, nextY - y);
     return { x, y, nx: (y - nextY) / length, ny: (nextX - x) / length };
 });
-function getRankEmblemSVG(tier, division, color) {
+function getRankEmblemSVG(tier, division, color = '#5B6670') {
+    if (tier === 'Unranked') {
+      return `<svg class="rank-emblem" viewBox="0 0 64 80" fill="none" aria-hidden="true">
+        <polygon points="32,6 56,26 48,54 32,72 16,54 8,26" stroke="#5B6670" stroke-width="2" stroke-dasharray="4 3" fill="rgba(27,35,43,0.7)"/>
+        <polygon points="32,22 40,32 32,44 24,32" fill="#5B6670" fill-opacity="0.4"/>
+        <circle cx="32" cy="56" r="3" fill="#5B6670"/>
+      </svg>`;
+    }
     const chevrons = division === 3 ?
         `<path d="M20 54 L32 64 L44 54" stroke="${color}" stroke-width="2.5" fill="none"/>
      <path d="M22 60 L32 68 L42 60" stroke="${color}" stroke-width="2.5" fill="none"/>
@@ -132,6 +139,7 @@ export class UI {
   <section class="screen level-screen" data-panel="levels" hidden><div class="level-content"><div class="screen-heading"><div><div class="eyebrow mono">ONE MORE ANGLE</div><h2>THE ROOMS<span class="heading-period">.</span></h2></div>${button('BACK', 'back', 'small-button')}</div><p class="levels-summary mono">REPLAY TO IMPROVE YOUR RANK. NEW ROOMS UNLOCK IN ORDER.</p><div class="room-scroll" tabindex="0" aria-label="Rooms, scroll for more"><div class="room-space"></div><div class="room-window"></div></div></div></section>
   <section class="screen settings-screen" data-panel="settings" hidden><div class="settings-content"><div class="eyebrow mono">YOUR GAME</div><h2>SETTINGS.</h2><section class="settings-category"><h3>GAMEPLAY & CONTROLS</h3><div class="setting-list">${switcher('AIM PREVIEW', 'aimPreview')}<label class="range-setting" for="touch-sensitivity"><span>TOUCH DRAG SENSITIVITY <output data-sensitivity>1.00×</output></span><input id="touch-sensitivity" type="range" min="0.5" max="2" step="0.05" value="1" data-setting-value="touchSensitivity"><small class="mono">0.5× / LONG PULL <span>2× / SHORT PULL</span></small></label></div></section><section class="settings-category"><h3>VIDEO & ACCESSIBILITY</h3><div class="setting-list"><label class="select-setting" for="reduced-mode"><span>REDUCED MOTION</span><select id="reduced-mode" data-setting-value="reducedMotionMode"><option value="system">SYSTEM</option><option value="on">ON</option><option value="off">OFF</option></select></label>${switcher('HIGH-DPI DISPLAY', 'highDpi')}</div></section><section class="settings-category"><h3>KEYBINDS REFERENCE</h3><dl class="keybind-grid">${[['AIM', 'ARROWS'], ['FINE AIM', 'SHIFT'], ['CHARGE / RELEASE', 'SPACE'], ['RESTART', 'R'], ['HELP', 'H'], ['PAUSE', 'ESC']].map(([label, key]) => '<div><dt>' + label + '</dt><dd><kbd>' + key + '</kbd></dd></div>').join('')}</dl></section>${button('BACK', 'back', 'wide-button')}</div></section>
   <section class="screen overlay-screen" data-panel="pause" role="dialog" aria-modal="true" aria-labelledby="pause-heading" hidden><div class="panel"><div class="eyebrow mono">TAKE YOUR TIME</div><h2 id="pause-heading">PAUSED.</h2>${button('RESUME', 'resume', 'primary wide-button')}${button('HOW TO PLAY', 'guide', 'wide-button')}${button('RESTART', 'restart', 'wide-button')}${button('MAIN MENU', 'title', 'wide-button')}</div></section>
+  <section class="screen overlay-screen" data-panel="turns-exceeded" role="dialog" aria-modal="true" aria-labelledby="turns-heading" hidden><div class="panel turns-panel"><div class="eyebrow mono" data-turns-level>ROOM 01</div><h2 id="turns-heading">TURNS EXCEEDED.</h2><div class="turns-metric mono"><span class="turns-count"><b data-turns-shots>1</b> / <b data-turns-par>1</b> TURNS TAKEN</span><span class="turns-note">ROOM CEILING REACHED</span></div><p class="turns-desc mono">CLEAR THE GOAL WITHIN PAR TO ADVANCE.</p><button type="button" class="button primary retry-progress-button" data-action="turns-retry" aria-label="Retry room"><span class="button-surface"><span class="button-progress-fill" data-turns-fill></span></span><span class="button-label" data-turns-label>RETRY (2.0s)</span><span class="button-line"></span></button></div></section>
   <section class="screen overlay-screen" data-panel="result" role="dialog" aria-modal="true" aria-labelledby="result-heading" hidden><div class="panel result-panel"><div class="eyebrow mono" data-result-level></div><h2 id="result-heading">ON TARGET.</h2><div class="result-rank mono" data-result-rank></div><div class="result-score mono"><span><b data-result-shots></b> SHOTS</span><span>PAR <b data-result-par></b></span></div><div class="result-performance mono"><span data-result-time></span><span data-result-rating></span></div>${button('NEXT ROOM', 'next', 'primary wide-button')}${button('RETRY', 'restart', 'wide-button')}${button('THE ROOMS', 'levels', 'wide-button')}</div></section>
   <section class="screen profile-screen" data-panel="profile" hidden aria-labelledby="profile-heading">
     <div class="profile-content">
@@ -323,8 +331,10 @@ export class UI {
         const field = q('[data-profile-callsign]');
         if (field !== document.activeElement && !field.dataset.edited) field.value = profile?.callsign || '';
         const online = profile?.online ?? {};
-        const rank = getRankFromElo(online.elo ?? 0);
-        q('[data-profile-rank]').textContent = `${rank.label} / ${online.elo ?? 0} ELO`;
+        const races = online.races ?? 0;
+        const rank = getRankFromElo(online.elo ?? 0, races);
+        const rankText = rank.tier === 'Unranked' ? `UNRANKED (${races}/5 PLACEMENT)` : `${rank.label} / ${online.elo ?? 0} ELO`;
+        q('[data-profile-rank]').textContent = rankText;
         q('[data-profile-emblem]').innerHTML = getRankEmblemSVG(rank.tier, rank.division, rank.color);
         const wins = online.wins ?? 0;
         const losses = online.losses ?? 0;
@@ -598,6 +608,44 @@ export class UI {
         for (const button of this.root.querySelectorAll('[data-ladder-tier]'))
             button.setAttribute('aria-pressed', String(+button.dataset.ladderTier === index));
         this.root.querySelector('.ladder-selected').innerHTML = getRankEmblemSVG(tier.tier, tier.division, tier.color) + '<div><strong style="color:' + tier.color + '">' + tier.label + '</strong><span class="mono">' + (index * 50) + ' ELO / ' + (index * 100) + ' CAREER RR</span><small>' + (index === 24 ? 'TOP OF THE LADDER' : '100 DIVISION RR TO PROMOTE') + '</small></div>';
+    }
+    showTurnsExceeded({ level, shots, par, onRetry }) {
+        const panel = this.root.querySelector('[data-panel="turns-exceeded"]');
+        if (!panel) return onRetry();
+        this.turnsExceededOpen = true;
+        panel.hidden = false;
+        this.root.querySelector('[data-turns-level]').textContent = `ROOM ${String(level.id).padStart(2, '0')} // ${level.name.toUpperCase()}`;
+        this.root.querySelector('[data-turns-shots]').textContent = shots;
+        this.root.querySelector('[data-turns-par]').textContent = par;
+        const fill = this.root.querySelector('[data-turns-fill]');
+        const label = this.root.querySelector('[data-turns-label]');
+        fill.style.width = '0%';
+        label.textContent = 'RETRY (2.0s)';
+        let completed = false;
+        let rafId = 0;
+        const duration = 2000;
+        const start = performance.now();
+        const finish = () => {
+            if (completed) return;
+            completed = true;
+            cancelAnimationFrame(rafId);
+            panel.hidden = true;
+            this.turnsExceededOpen = false;
+            this.closeTurnsExceeded = null;
+            onRetry();
+        };
+        this.closeTurnsExceeded = finish;
+        const step = (now) => {
+            if (completed) return;
+            const elapsed = now - start;
+            const progress = Math.min(1, elapsed / duration);
+            fill.style.width = `${progress * 100}%`;
+            const remaining = Math.max(0, (duration - elapsed) / 1000).toFixed(1);
+            label.textContent = `RETRY (${remaining}s)`;
+            if (progress >= 1) finish();
+            else rafId = requestAnimationFrame(step);
+        };
+        rafId = requestAnimationFrame(step);
     }
     showPromotion(info) {
         this.finishPromotion?.();

@@ -13,6 +13,7 @@ export const TIER_COLORS = {
   Ascendant: '#26A69A',
   Immortal: '#E53935',
   Radiant: '#FFD700',
+  Unranked: '#5B6670',
 };
 
 const positive = n => Number.isSafeInteger(n) && n > 0;
@@ -22,6 +23,7 @@ const validSeed = value => typeof value === 'string' && /^[\da-f]{8}-(?:[\da-f]{
 const uuid = () => globalThis.crypto?.randomUUID?.() ?? 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const n = Math.random() * 16 | 0; return (c === 'x' ? n : (n & 3) | 8).toString(16); });
 
 export function getRankFromIndex(index) {
+  if (index === -1) return { tier: 'Unranked', division: 1, label: 'UNRANKED', color: TIER_COLORS.Unranked, index: -1 };
   index = Math.max(0, Math.min(24, Math.floor(count(index))));
   if (index === 24) return { tier: 'Radiant', division: 1, label: 'RADIANT', color: TIER_COLORS.Radiant, index };
   const tierIndex = Math.floor(index / 3);
@@ -38,8 +40,23 @@ export function getRankFromIndex(index) {
 }
 
 /** 2 RR = 1 ELO. Each division is 50 ELO = 100 RR. Radiant starts at 1200 ELO. */
-export function getRankFromElo(elo) {
+export function getRankFromElo(elo, races = null) {
   elo = Math.max(0, Math.floor(count(elo)));
+  if (races !== null && races < 5) {
+    return {
+      tier: 'Unranked',
+      division: 1,
+      label: 'UNRANKED',
+      sublabel: `PLACEMENT (${races}/5)`,
+      color: TIER_COLORS.Unranked,
+      index: -1,
+      tierIndex: -1,
+      elo,
+      eloInTier: 0,
+      rr: 0,
+      placementsNeeded: 5 - races
+    };
+  }
   const tierIndex = Math.min(24, Math.floor(elo / 50));
   const eloInTier = tierIndex === 24 ? Math.max(0, elo - 1200) : elo % 50;
   const rr = eloInTier * 2;

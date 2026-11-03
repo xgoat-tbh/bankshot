@@ -58,7 +58,7 @@ export const CONFIG = Object.freeze({
   layout: {
     unitMin: 7, unitVmin: 1, unitMax: 11, cutUnits: 1.2,
     minTarget: 44, portraitRatio: 0.9, sideUnits: 4, topUnits: 16, bottomUnits: 12,
-    mobileSideUnits: 2, mobileTopUnits: 20, mobileBottomUnits: 20,
+    mobileSideUnits: 0, mobileTopUnits: 10, mobileBottomUnits: 10,
   },
   palette: { ink: '#0C1116', slate: '#1B232B', grey: '#5B6670', bone: '#E9E6DF', accent: '#FF6B3D', portalCyan: '#00E5FF', portalBlue: '#3B82F6', bumperOrange: '#FF9100', gravityPurple: '#D500F9', movingWhite: '#FFFFFF', fireGold: '#FFD700', fireAmber: '#FF6D00' },
   game: { chapters: ['Trajectory', 'Resilience', 'Fragility', 'The Void', 'Mastery', 'Orbital', 'Momentum', 'Convergence', 'Singularity', 'Event Horizon'], chapterSize: 10 },

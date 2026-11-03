@@ -107,3 +107,25 @@ test('profile client supports offline cached identity, recovery, subscription, a
   assert.equal(offline.snapshot.status, 'offline');
   service.destroy(); offline.destroy();
 });
+
+test('profile store with sqlite persistence creates tables, records ratings, and serves leaderboard', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bankshot-sqlite-'));
+  try {
+    const filePath = join(dir, 'profiles.db');
+    const store = serverModule.createProfileStore({ filePath });
+    store.sync({ id: ID, callsign: 'VIPER', campaign: campaign() });
+    store.sync({ id: OTHER, callsign: 'JETT', campaign: campaign() });
+    store.recordRace({ raceId: 'race-sqlite-1', winnerId: ID, participantIds: [ID, OTHER], placements: [ID, OTHER] });
+    assert.equal(store.get(ID).callsign, 'VIPER');
+    assert.equal(store.get(ID).online.wins, 1);
+    const leaderboard = store.getLeaderboard(10);
+    assert.equal(leaderboard.length, 2);
+    assert.equal(leaderboard[0].id, ID);
+    assert.ok(leaderboard[0].elo > leaderboard[1].elo);
+    store.close();
+    // Reopen to verify disk persistence
+    const reloaded = serverModule.createProfileStore({ filePath });
+    assert.equal(reloaded.get(ID).online.wins, 1);
+    reloaded.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
