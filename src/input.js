@@ -11,11 +11,12 @@ export function calculateDragPower(distance, range) {
 }
 
 export class Input {
-  constructor(canvas, renderer, getWorld, handlers) {
+  constructor(canvas, renderer, getWorld, handlers, { keyboardTarget = window, pointerTarget = document } = {}) {
     this.canvas = canvas;
     this.renderer = renderer;
     this.getWorld = getWorld;
     this.handlers = handlers;
+    this.keyboardTarget = keyboardTarget;
     this.enabled = false;
     this.pointerId = null;
     this.dragging = false;
@@ -38,10 +39,11 @@ export class Input {
     canvas.addEventListener('pointerup', this.pointerUp, options);
     canvas.addEventListener('pointercancel', this.pointerCancel, options);
     canvas.addEventListener('lostpointercapture', this.pointerCancel, options);
-    window.addEventListener('keydown', this.keyDown, options);
-    window.addEventListener('keyup', this.keyUp, options);
+    keyboardTarget.addEventListener('keydown', this.keyDown, options);
+    keyboardTarget.addEventListener('keyup', this.keyUp, options);
     window.addEventListener('blur', this.cancel, options);
-    document.addEventListener('pointerdown', this.detectPointer, options);
+    pointerTarget.addEventListener('pointerdown', this.detectPointer, options);
+    if (keyboardTarget === canvas) canvas.addEventListener('blur', this.cancel, options);
   }
 
   setKind(kind) {
@@ -73,6 +75,18 @@ export class Input {
 
   pointerMove = (event) => {
     if (event.pointerId !== this.pointerId || !this.dragging) return;
+    this.pendingPointer = { pointerId: event.pointerId, clientX: event.clientX, clientY: event.clientY };
+    if (this.pointerFrame != null) return;
+    this.pointerFrame = requestAnimationFrame(() => {
+      this.pointerFrame = null;
+      const latest = this.pendingPointer;
+      this.pendingPointer = null;
+      if (latest) this.applyPointer(latest);
+    });
+  };
+
+  applyPointer = (event) => {
+    if (event.pointerId !== this.pointerId || !this.dragging) return;
     const dx = this.startX - event.clientX;
     const dy = this.startY - event.clientY;
     this.dragLength = Math.hypot(dx, dy);
@@ -83,14 +97,15 @@ export class Input {
     const localY = this.startY - this.renderer.top;
     const edgeX = Math.abs(dx) > CONFIG.physics.epsilon ? (dx > 0 ? localX : this.renderer.width - localX) * this.dragLength / Math.abs(dx) : Infinity;
     const edgeY = Math.abs(dy) > CONFIG.physics.epsilon ? (dy > 0 ? localY : this.renderer.height - localY) * this.dragLength / Math.abs(dy) : Infinity;
-    const range = Math.max(I.minimumDragRange, Math.min(maxDrag, Math.min(edgeX, edgeY) * I.edgePowerFactor));
+    // Reserve a usable soft-shot interval even when the puck is near an edge.
+    const range = Math.max(Math.min(maxDrag, I.cancelPixels * 4), Math.min(maxDrag, Math.min(edgeX, edgeY) * I.edgePowerFactor));
     this.power = calculateDragPower(this.dragLength, range);
     this.angle = Math.atan2(dy, dx);
   };
 
   pointerUp = (event) => {
     if (event.pointerId !== this.pointerId) return;
-    this.pointerMove(event);
+    this.applyPointer(event);
     if (this.enabled && this.dragLength >= I.cancelPixels) this.fire();
     this.cancel();
   };
@@ -101,6 +116,7 @@ export class Input {
 
   keyDown = (event) => {
     if (event.metaKey || event.ctrlKey || event.altKey) return;
+    if (this.keyboardTarget === this.canvas && (event.code.startsWith('Arrow') || event.code === 'Space' || event.code === 'KeyR')) event.stopPropagation();
     this.setKind('keyboard');
     if (event.code === 'KeyH' && !event.repeat) {
       event.preventDefault();
@@ -141,6 +157,7 @@ export class Input {
   };
 
   keyUp = (event) => {
+    if (this.keyboardTarget === this.canvas && (event.code.startsWith('Arrow') || event.code === 'Space')) event.stopPropagation();
     if (event.code === 'ArrowLeft' || event.code === 'ArrowUp') this.turnLeft = false;
     if (event.code === 'ArrowRight' || event.code === 'ArrowDown') this.turnRight = false;
     this.fine = event.shiftKey;
@@ -165,6 +182,9 @@ export class Input {
   }
 
   cancel = () => {
+    if (this.pointerFrame != null) cancelAnimationFrame(this.pointerFrame);
+    this.pointerFrame = null;
+    this.pendingPointer = null;
     const pointer = this.pointerId;
     this.pointerId = null;
     this.dragging = false;
@@ -173,6 +193,7 @@ export class Input {
     this.turnLeft = false;
     this.turnRight = false;
     this.dragLength = 0;
+    this.fine = false;
     if (pointer !== null && this.canvas.hasPointerCapture(pointer)) this.canvas.releasePointerCapture(pointer);
   };
 

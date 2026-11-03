@@ -1,15 +1,18 @@
 // Shared tuning lives here; procedural room geometry lives in generator.js.
 export const CONFIG = Object.freeze({
   world: {
-    width: 1200, height: 800, radius: 14, dprCap: 2,
-    boundary: [[100, 60], [1100, 60], [1140, 100], [1140, 700], [1100, 740], [100, 740], [60, 700], [60, 100]],
+    width: 1600, height: 900, radius: 14, dprCap: 2,
+    boundary: [[120, 70], [1480, 70], [1540, 130], [1540, 770], [1480, 830], [120, 830], [60, 770], [60, 130]],
     goalHalfWidth: 48, goalHalfHeight: 46, goalCut: 14,
   },
   physics: {
     step: 1 / 240, maxFrame: 0.05, maxSpeed: 1800, damping: 0.6,
     stopSpeed: 8, shotLimit: 12, maxCollisions: 16,
-    epsilon: 1e-8, separation: 0.002, glassThreshold: 900, glassRetention: 0.7,
+    epsilon: 1e-8, separation: 0.05, glassThreshold: 900, glassRetention: 0.7,
     restitution: { solid: 0.8, rubber: 0.98, glass: 0.5 },
+    portals: { cooldown: 0.15, exitClearance: 90, exitSearch: 180 },
+    gravityWells: { radius: 100, strength: 1800, softening: 30, maxAcceleration: 1200 },
+    bumpers: { restitution: 1.25 },
   },
   input: {
     cancelPixels: 12, dragPixels: 210, touchDragPixels: 80, edgePowerFactor: 0.85,
@@ -54,11 +57,11 @@ export const CONFIG = Object.freeze({
   },
   layout: {
     unitMin: 7, unitVmin: 1, unitMax: 11, cutUnits: 1.2,
-    minTarget: 44, portraitRatio: 0.9, sideUnits: 14, topUnits: 11, bottomUnits: 11,
-    mobileSideUnits: 2, mobileTopUnits: 16, mobileBottomUnits: 16,
+    minTarget: 44, portraitRatio: 0.9, sideUnits: 4, topUnits: 16, bottomUnits: 12,
+    mobileSideUnits: 2, mobileTopUnits: 20, mobileBottomUnits: 20,
   },
-  palette: { ink: '#0C1116', slate: '#1B232B', grey: '#5B6670', bone: '#E9E6DF', accent: '#FF6B3D', portalCyan: '#00E5FF', bumperOrange: '#FF9100', gravityPurple: '#D500F9', movingWhite: '#FFFFFF', fireGold: '#FFD700', fireAmber: '#FF6D00' },
-  game: { chapters: ['Trajectory', 'Resilience', 'Fragility', 'The Void', 'Mastery'], chapterSize: 10 },
+  palette: { ink: '#0C1116', slate: '#1B232B', grey: '#5B6670', bone: '#E9E6DF', accent: '#FF6B3D', portalCyan: '#00E5FF', portalBlue: '#3B82F6', bumperOrange: '#FF9100', gravityPurple: '#D500F9', movingWhite: '#FFFFFF', fireGold: '#FFD700', fireAmber: '#FF6D00' },
+  game: { chapters: ['Trajectory', 'Resilience', 'Fragility', 'The Void', 'Mastery', 'Orbital', 'Momentum', 'Convergence', 'Singularity', 'Event Horizon'], chapterSize: 10 },
   storage: { key: 'bankshot.db.v3', version: 3, legacyKey: 'bankshot.db.v2' },
   tests: { tolerance: 0.001, maxSteps: 3200, stressAngles: 48 },
 });

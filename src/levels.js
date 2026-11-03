@@ -2,7 +2,7 @@ import { CONFIG } from './config.js';
 
 const wall = (a, b, mat = 'solid') => ({ a, b, mat });
 const room = (walls) => {
-  const points = CONFIG.world.boundary;
+  const points = [[100,60],[1100,60],[1140,100],[1140,700],[1100,740],[100,740],[60,700],[60,100]];
   return points.map((point, i) => wall(point, points[(i + 1) % points.length])).concat(walls);
 };
 const goal = (x, y) => {
@@ -12,7 +12,7 @@ const goal = (x, y) => {
 
 // These are authored rooms, not generated puzzles. Solutions are executable
 // replays using normalized launch power and clockwise angles in screen space.
-export const LEVELS = [
+const AUTHORED_LEVELS = [
   {
     id: 1, name: 'First Contact', par: 1, puck: [250, 280], goal: goal(590, 620),
     walls: room([wall([470, 180], [800, 510]), wall([420, 370], [420, 700])]),
@@ -78,3 +78,17 @@ export const LEVELS = [
     solution: [{ angleDeg: -90, power: 0.16 }, { angleDeg: 0, power: 0.295 }, { angleDeg: 90, power: 0.75 }],
   },
 ];
+
+// Translate the original executable tutorial geometry into the expanded canvas.
+// Its enclosing bank surfaces remain authored: stretching them changes rebounds.
+const translate = ([x,y]) => [x+200,y+50];
+export const LEVELS = AUTHORED_LEVELS.map(level=>({...level,authored:true,
+  puck:translate(level.puck),goal:level.goal.map(translate),
+  walls:level.walls.map(item=>({...item,a:translate(item.a),b:translate(item.b)})),
+  hazards:level.hazards.map(polygon=>polygon.map(translate)),
+  bounds:{minX:260,maxX:1340,minY:110,maxY:790},
+}));
+export const MILESTONES = Object.freeze({
+  25:{name:'Kinetic Gate',seed:'kinetic-gate'},50:{name:'Gravity Crucible',seed:'gravity-crucible'},
+  75:{name:'Orbital Convergence',seed:'orbital-convergence'},100:{name:'Event Horizon',seed:'event-horizon'},
+});

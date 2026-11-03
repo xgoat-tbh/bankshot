@@ -2,10 +2,11 @@
 import { chromium } from 'playwright';
 import { existsSync, mkdirSync } from 'node:fs';
 import { CONFIG, DEG } from '../src/config.js';
-import { generateRoom } from '../src/generator.js';
+import { createCampaignProvider } from '../src/generator.js';
 import { createWorld, launch, stepWorld } from '../src/physics.js';
 const url = process.env.BANKSHOT_URL || 'http://127.0.0.1:4174';
 const seed = '12345678-1234-4123-8123-123456789012';
+const campaign = createCampaignProvider(seed);
 const browser = await chromium.launch({ executablePath: process.env.BANKSHOT_BROWSER || (existsSync('C:/Program Files/Google/Chrome/Application/chrome.exe') ? 'C:/Program Files/Google/Chrome/Application/chrome.exe' : undefined) });
 let checks = 0;
 const errors = [];
@@ -22,8 +23,8 @@ async function open(options = {}, save) { const p = await browser.newPage({ view
     await p.addInitScript(value => { if (!sessionStorage.getItem('fixture')) {
         localStorage.setItem('bankshot.db.v2', JSON.stringify(value));
         sessionStorage.setItem('fixture', '1');
-    } }, save); await p.clock.install(); await p.goto(url, { waitUntil: 'networkidle' }); await p.evaluate(() => document.fonts.ready); await p.clock.pauseAt(await p.evaluate(() => Date.now() + 50)); return p; }
-function pull(page, world, shot, touch = false) { const v = page.viewportSize(), L = CONFIG.layout, W = CONFIG.world; const unit = Math.max(L.unitMin, Math.min(L.unitMax, Math.min(v.width, v.height) * L.unitVmin / 100)); const portrait = v.width / v.height < L.portraitRatio; const side = (portrait ? L.mobileSideUnits : L.sideUnits) * unit, top = (portrait ? L.mobileTopUnits : L.topUnits) * unit, bottom = (portrait ? L.mobileBottomUnits : L.bottomUnits) * unit; const scale = Math.min((v.width - side * 2) / W.width, (v.height - top - bottom) / W.height); const x = (v.width - W.width * scale) / 2 + world.x * scale, y = top + (v.height - top - bottom - W.height * scale) / 2 + world.y * scale; const a = shot.angleDeg * DEG, c = Math.cos(a), s = Math.sin(a); const ex = Math.abs(c) > CONFIG.physics.epsilon ? (c > 0 ? x : v.width - x) / Math.abs(c) : Infinity, ey = Math.abs(s) > CONFIG.physics.epsilon ? (s > 0 ? y : v.height - y) / Math.abs(s) : Infinity; const range = Math.max(CONFIG.input.minimumDragRange, Math.min(touch ? CONFIG.input.touchDragPixels : CONFIG.input.dragPixels, Math.min(ex, ey) * CONFIG.input.edgePowerFactor)); return { x, y, endX: x - c * (CONFIG.input.cancelPixels + Math.sqrt(shot.power) * (range - CONFIG.input.cancelPixels)), endY: y - s * (CONFIG.input.cancelPixels + Math.sqrt(shot.power) * (range - CONFIG.input.cancelPixels)) }; }
+    } }, save); await p.clock.install({time:new Date('2026-11-02T12:00:00Z')}); await p.clock.pauseAt(new Date('2026-11-02T12:00:01Z')); await p.goto(url, { waitUntil: 'networkidle' }); await p.evaluate(() => document.fonts.ready); return p; }
+function pull(page, world, shot, touch = false) { const v = page.viewportSize(), L = CONFIG.layout, W = CONFIG.world; const unit = Math.max(L.unitMin, Math.min(L.unitMax, Math.min(v.width, v.height) * L.unitVmin / 100)); const portrait = v.width / v.height < L.portraitRatio; const side = (portrait ? L.mobileSideUnits : L.sideUnits) * unit, top = (portrait ? L.mobileTopUnits : L.topUnits) * unit, bottom = (portrait ? L.mobileBottomUnits : L.bottomUnits) * unit; const scale = Math.min((v.width - side * 2) / W.width, (v.height - top - bottom) / W.height); const x = (v.width - W.width * scale) / 2 + world.x * scale, y = top + (v.height - top - bottom - W.height * scale) / 2 + world.y * scale; const a = shot.angleDeg * DEG, c = Math.cos(a), s = Math.sin(a); const ex = Math.abs(c) > CONFIG.physics.epsilon ? (c > 0 ? x : v.width - x) / Math.abs(c) : Infinity, ey = Math.abs(s) > CONFIG.physics.epsilon ? (s > 0 ? y : v.height - y) / Math.abs(s) : Infinity; const range = Math.max(Math.min(touch ? CONFIG.input.touchDragPixels : CONFIG.input.dragPixels, CONFIG.input.cancelPixels * 4), Math.min(touch ? CONFIG.input.touchDragPixels : CONFIG.input.dragPixels, Math.min(ex, ey) * CONFIG.input.edgePowerFactor)); return { x, y, endX: x - c * (CONFIG.input.cancelPixels + Math.sqrt(shot.power) * (range - CONFIG.input.cancelPixels)), endY: y - s * (CONFIG.input.cancelPixels + Math.sqrt(shot.power) * (range - CONFIG.input.cancelPixels)) }; }
 async function drag(p, world, shot) { const q = pull(p, world, shot); await p.mouse.move(q.x, q.y); await p.mouse.down(); await p.mouse.move(q.endX, q.endY, { steps: 3 }); await p.mouse.up(); }
 async function solve(p, room, interrupt = false) { const expected = createWorld(room); await tick(p, 2200); for (const shot of room.solution) {
     await drag(p, expected, shot);
@@ -62,10 +63,24 @@ try {
     await first.locator('[data-guide-tab="4"]').click();
     const practice = first.locator('.practice-canvas');
     await practice.focus();
-    await first.keyboard.press('Space');
+    await first.keyboard.down('Space');
+    await tick(first, 300);
+    check((await first.locator('[data-sandbox-status]').textContent()).includes('POWER'), 'Practice shows keyboard charge power');
+    await first.keyboard.up('Space');
     await tick(first, 300);
     check((await first.locator('[data-sandbox-status]').textContent()).includes('1 SHOTS'), 'Practice canvas fires a real shot');
     check(JSON.stringify(await db(first)) === practiceBefore, 'Practice does not mutate career');
+    await first.locator('[data-sandbox-reset]').click();
+    await practice.focus();
+    await first.keyboard.down('Space');
+    await tick(first, 200);
+    await first.locator('[data-sandbox-reset]').click();
+    await first.keyboard.up('Space');
+    await tick(first, 700);
+    check((await first.locator('[data-sandbox-status]').textContent()).includes('0 SHOTS'), 'Practice reset cancels a charged shot');
+    check(await first.locator('.sandbox-toolbar button').count() === 6, 'Practice offers all object placement tools');
+    await first.locator('#guide-content').evaluate(el => { el.scrollTop = 0; });
+    await first.screenshot({ path: 'tests/artifacts/practice.png' });
     await first.locator('[data-guide-tab="0"]').click();
     await first.keyboard.press('ArrowRight');
     check(await first.locator('[data-guide-tab="1"]').getAttribute('aria-selected') === 'true', 'Guide arrow navigation');
@@ -100,18 +115,21 @@ try {
     await tick(p, 2200);
     await p.screenshot({ path: 'tests/artifacts/game.png' });
     for (let n = 1; n <= 12; n++) {
-        await solve(p, generateRoom(n, seed), n === 1);
+        await solve(p, campaign(n, seed), n === 1);
         await action(p, 'next').click();
     }
     let saved = await db(p);
     check(saved.maxUnlocked === 13 && saved.stats.levelsCompleted === 12, 'Twelve sequential unlocks');
-    check(saved.stats.totalShotsFired === 12 && saved.stats.recentShots.length === 10, 'Career shots and rolling ten history');
+    check(saved.stats.totalShotsFired === Array.from({length:12},(_,i)=>campaign(i+1).par).reduce((a,b)=>a+b,0) && saved.stats.recentShots.length === 10, 'Career shots and rolling ten history');
     await p.reload({ waitUntil: 'networkidle' });
     await tick(p, 500);
     check((await db(p)).maxUnlocked === 13, 'Progress survives reload');
     await action(p, 'levels').click();
+    await p.locator('[data-index="1"]').evaluate(el=>{window.retainedRoom=el;});
+    await p.locator('.room-scroll').evaluate(el=>{el.scrollTop=76;el.dispatchEvent(new Event('scroll'));});
+    check(await p.locator('[data-index="1"]').evaluate(el=>el===window.retainedRoom), 'Virtual scrolling retains keyed room elements');
     await p.locator('[data-index="1"]').click();
-    await solve(p, generateRoom(1, seed));
+    await solve(p, campaign(1, seed));
     saved = await db(p);
     check(saved.maxUnlocked === 13 && saved.levelRecords[1].completions === 2 && saved.levelRecords[1].rank === 'A', 'Replay preserves unlock and best rank');
     await action(p, 'next').click();
@@ -146,7 +164,7 @@ try {
     for (let failure = 0; failure < 3; failure++) {
         const budget = Number(await failing.locator('[data-tries]').textContent());
         for (let shot = 0; shot < budget; shot++) {
-            const expected = createWorld(generateRoom(1, seed));
+            const expected = createWorld(campaign(1, seed));
             for (let prev = 0; prev < shot; prev++) {
                 launch(expected, miss.angleDeg * DEG, miss.power);
                 let steps = 0;
@@ -170,7 +188,7 @@ try {
     const late = await open({}, fixture(31));
     await tick(late, 500);
     await action(late, 'play').click();
-    const room = generateRoom(31, seed);
+    const room = campaign(31, seed);
     check(room.hazards.length > 0 && room.walls.some(w => w.mat !== 'solid'), 'Room31 includes hazards and later materials');
     await solve(late, room);
     await late.close();
@@ -178,7 +196,7 @@ try {
         const advanced = await open({}, fixture(n));
         await tick(advanced, 500);
         await action(advanced, 'play').click();
-        await solve(advanced, generateRoom(n, seed));
+        await solve(advanced, campaign(n, seed));
         await advanced.close();
     }
     const high = await open({}, fixture(1200));
@@ -195,7 +213,7 @@ try {
     await tick(touch, 2200);
     await touch.screenshot({ path: 'tests/artifacts/mobile.png' });
     check(await touch.locator('canvas.arena').getAttribute('width') === '720', 'DPR capped at two');
-    const cdp = await touch.context().newCDPSession(touch), point = pull(touch, createWorld(generateRoom(1, seed)), generateRoom(1, seed).solution[0], true), q = { x: point.x, y: point.y, id: 1 };
+    const cdp = await touch.context().newCDPSession(touch), point = pull(touch, createWorld(campaign(1, seed)), campaign(1, seed).solution[0], true), q = { x: point.x, y: point.y, id: 1 };
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [q] });
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ ...q, x: point.endX, y: point.endY }] });
     await cdp.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });

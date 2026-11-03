@@ -1,3 +1,4 @@
+import { getRankFromElo } from './state.js';
 import { Sandbox } from './sandbox.js';
 import { CONFIG, applyConfigTokens } from './config.js';
 const B = 'M4 0H33L43 10V25L36 32L45 41V55L34 66H0V4ZM12 12V27H29L31 25V14L29 12ZM12 39V54H29L33 50V43L29 39Z';
@@ -6,9 +7,14 @@ export function icon(name, cls = '') {
 }
 const button = (label, action, cls = '', attrs = '') => `<button type="button" class="button ${cls}" data-action="${action}" ${attrs}><span class="button-surface" aria-hidden="true"><span class="button-sweep"></span></span><span class="button-label">${label}</span><span class="button-line" aria-hidden="true"></span></button>`;
 const switcher = (label, key) => button(`${label}<span class="setting-value mono" data-value="${key}">OFF</span>`, 'setting', 'setting', `role="switch" aria-checked="false" data-key="${key}"`);
-const chapters = ['TRAJECTORY', 'RESILIENCE', 'FRAGILITY', 'THE VOID', 'MASTERY'];
-const chapter = n => chapters[Math.min(4, Math.floor((n - 1) / 10))];
+const chapters = CONFIG.game.chapters.map(name => name.toUpperCase());
+const chapter = n => chapters[Math.min(chapters.length - 1, Math.max(0, Math.floor((n - 1) / CONFIG.game.chapterSize)))];
 const escape = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const arenaEdges = CONFIG.world.boundary.map(([x, y], index, points) => {
+    const [nextX, nextY] = points[(index + 1) % points.length];
+    const length = Math.hypot(nextX - x, nextY - y);
+    return { x, y, nx: (y - nextY) / length, ny: (nextX - x) / length };
+});
 function getRankEmblemSVG(tier, division, color) {
     const chevrons = division === 3 ?
         `<path d="M20 54 L32 64 L44 54" stroke="${color}" stroke-width="2.5" fill="none"/>
@@ -25,11 +31,17 @@ function getRankEmblemSVG(tier, division, color) {
     ${tier === 'Radiant' ? '<polygon points="32,2 40,16 32,12 24,16" fill="#FFD700"/><polygon points="32,76 40,62 32,66 24,62" fill="#FFD700"/>' : chevrons}
   </svg>`;
 }
+function guidePuck(path, radius = 7) {
+    return `<circle class="guide-puck" cx="0" cy="0" r="${radius}" opacity="0">
+      <animateMotion dur="3s" repeatCount="indefinite" path="${path}" keyPoints="0;1" keyTimes="0;1" calcMode="spline" keySplines="0.15 0.8 0.25 1"/>
+      <animate attributeName="opacity" dur="3s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.06;0.78;0.9;1"/>
+    </circle>`;
+}
 function guideDiagram(section, reduced) {
     if (reduced) {
         const staticDiagrams = [
             '<path class="guide-route" d="M80 85H415"/><path class="guide-goal" d="M395 65H435V105H395Z"/><circle class="guide-puck" cx="240" cy="85" r="7"/>',
-            '<path class="guide-route" d="M130 75H390"/><line x1="130" y1="75" x2="80" y2="75" stroke="var(--accent)" stroke-width="2" stroke-dasharray="3 3"/><circle class="guide-ghost" cx="80" cy="75" r="10" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 3"/><text x="60" y="118">PULL BACK</text><text x="320" y="118">RELEASE</text><circle class="guide-puck" cx="130" cy="75" r="7"/>',
+            '<path class="guide-route" d="M130 75H390"/><path class="guide-goal" d="M375 60H405V90H375Z"/><line x1="130" y1="75" x2="80" y2="75" stroke="var(--accent)" stroke-width="2" stroke-dasharray="3 3"/><circle class="guide-ghost" cx="80" cy="75" r="10" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="3 3"/><text x="60" y="118">PULL BACK</text><text x="320" y="118">RELEASE</text><circle class="guide-puck" cx="130" cy="75" r="7"/>',
             '<path class="guide-wall" d="M80 25H420" stroke-width="3"/><path class="guide-route" d="M90 115L250 25L410 115"/><line x1="250" y1="25" x2="250" y2="115" stroke="var(--grey)" stroke-dasharray="3 3"/><path class="guide-goal" d="M390 95H430V135H390Z"/><text x="145" y="70">IN</text><text x="325" y="70">OUT</text><circle class="guide-puck" cx="250" cy="25" r="7"/>',
             '<path class="guide-wall" d="M80 25V95M240 25V95M246 25V95" stroke-width="3"/><path class="guide-glass" d="M400 25V95"/><path class="guide-route" d="M30 80L80 50L30 20M180 80L240 50L180 20M340 80L400 50L450 25"/><text x="40" y="125">SOLID (80%)</text><text x="180" y="125">RUBBER (98%)</text><text x="360" y="125">GLASS (BREAKS)</text><circle class="guide-puck" cx="80" cy="50" r="6"/><circle class="guide-puck" cx="240" cy="50" r="6"/><circle class="guide-puck" cx="400" cy="50" r="6"/>',
             '<g transform="translate(60, 20)"><polygon points="20,5 35,20 20,35 5,20" stroke="#8B97A2" stroke-width="2" fill="none"/><text x="5" y="52" fill="#8B97A2" font-size="10" font-family="var(--mono)">IRON</text><polygon points="100,5 115,20 100,35 85,20" stroke="#CD7F32" stroke-width="2" fill="none"/><text x="80" y="52" fill="#CD7F32" font-size="10" font-family="var(--mono)">BRONZE</text><polygon points="180,5 195,20 180,35 165,20" stroke="#E6C229" stroke-width="2" fill="none"/><text x="168" y="52" fill="#E6C229" font-size="10" font-family="var(--mono)">GOLD</text><polygon points="260,5 275,20 260,35 245,20" stroke="#BA68C8" stroke-width="2" fill="none"/><text x="242" y="52" fill="#BA68C8" font-size="10" font-family="var(--mono)">DIAMOND</text><polygon points="340,5 355,20 340,35 325,20" stroke="#FFD700" stroke-width="2" fill="#FFD700" fill-opacity="0.3"/><text x="322" y="52" fill="#FFD700" font-size="10" font-family="var(--mono)">RADIANT</text></g><rect x="60" y="85" width="380" height="8" rx="2" fill="var(--slate)"/><rect x="60" y="85" width="220" height="8" rx="2" fill="var(--accent)"/><text x="60" y="120" fill="var(--accent)" font-family="var(--mono)" font-size="12">+30 RR (+15 ELO) UNDER PAR</text><text x="280" y="120" fill="var(--grey)" font-family="var(--mono)" font-size="12">-14 RR (-7 ELO) FAIL</text>',
@@ -42,60 +54,42 @@ function guideDiagram(section, reduced) {
         `<path class="guide-route" d="M80 85H415"/>
      <path class="guide-goal" d="M395 65H435V105H395Z"/>
      <circle cx="80" cy="85" r="9" stroke="var(--grey)" stroke-width="1.5" stroke-dasharray="3 3" fill="none"/>
-     <circle class="guide-puck" cx="0" cy="0" r="7">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M80 85 L415 85 L415 85" keyTimes="0; 0.72; 1" keySplines="0.15 0.55 0.25 1.0; 0 0 1 1" calcMode="spline"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.75; 0.85; 0.94; 1"/>
-     </circle>
+     ${guidePuck('M80 85L415 85', 7)}
      <circle cx="415" cy="85" r="7" stroke="var(--accent)" stroke-width="2" fill="none">
-       <animate attributeName="r" values="7; 7; 28" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.70; 0.92"/>
-       <animate attributeName="opacity" values="0; 0; 1; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.69; 0.74; 0.96"/>
+       <animate attributeName="r" values="7; 7; 28; 28" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.70; 0.92; 1"/>
+       <animate attributeName="opacity" values="0; 0; 1; 0; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.69; 0.74; 0.96; 1"/>
      </circle>`,
         // 1: CONTROLS - Pullback tension indicator, releases forward at medium speed, slows down to a stop, then resets
-        `<path class="guide-route" d="M130 75H390"/>
+        `<path class="guide-route" d="M130 75H390"/><path class="guide-goal" d="M375 60H405V90H375Z"/>
      <circle class="guide-ghost" cx="130" cy="75" r="10" stroke="var(--grey)" stroke-width="1.5" stroke-dasharray="3 3"/>
      <line x1="130" y1="75" x2="80" y2="75" stroke="var(--accent)" stroke-width="2" stroke-dasharray="3 3"/>
      <circle cx="80" cy="75" r="7" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="2 2" fill="none"/>
      <text x="60" y="118">PULL BACK</text><text x="320" y="118">RELEASE</text>
-     <circle class="guide-puck" cx="0" cy="0" r="7">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M130 75 L130 75 L390 75 L390 75" keyTimes="0; 0.22; 0.74; 1" keySplines="0 0 1 1; 0.15 0.55 0.25 1.0; 0 0 1 1" calcMode="spline"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.76; 0.86; 0.94; 1"/>
-     </circle>`,
+     ${guidePuck('M130 75L390 75', 7)}`,
         // 2: PHYSICS - Angle in = angle out. Glides from launch to wall, rebounds cleanly, slows down smoothly into pocket
         `<path class="guide-wall" d="M80 25H420" stroke-width="3"/>
      <path class="guide-route" d="M90 115L250 25L410 115"/>
      <line x1="250" y1="25" x2="250" y2="115" stroke="var(--grey)" stroke-dasharray="3 3"/>
      <path class="guide-goal" d="M390 95H430V135H390Z"/>
      <text x="145" y="70">IN</text><text x="325" y="70">OUT</text>
-     <circle class="guide-puck" cx="0" cy="0" r="7">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M90 115 L250 25 L410 115 L410 115" keyTimes="0; 0.35; 0.74; 1" keySplines="0.1 0.7 0.3 1; 0.15 0.55 0.25 1.0; 0 0 1 1" calcMode="spline"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.76; 0.86; 0.94; 1"/>
-     </circle>
+     ${guidePuck('M90 115L250 25L410 115', 7)}
      <circle cx="250" cy="25" r="5" stroke="var(--accent)" stroke-width="2" fill="none">
-       <animate attributeName="r" values="5; 5; 22" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.35; 0.52"/>
-       <animate attributeName="opacity" values="0; 0; 1; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.34; 0.37; 0.55"/>
+       <animate attributeName="r" values="5; 5; 22; 22" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.35; 0.52; 1"/>
+       <animate attributeName="opacity" values="0; 0; 1; 0; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.34; 0.37; 0.55; 1"/>
      </circle>`,
         // 3: MATERIALS - Solid bounce vs Rubber elastic bounce vs Glass shatter, with deceleration and clean reset
         `<path class="guide-wall" d="M80 25V95M240 25V95M246 25V95" stroke-width="3"/>
      <path class="guide-glass" d="M400 25V95"/>
      <path class="guide-route" d="M30 80L80 50L30 20M180 80L240 50L180 20M340 80L400 50L450 25"/>
      <text x="40" y="125">SOLID (80%)</text><text x="180" y="125">RUBBER (98%)</text><text x="360" y="125">GLASS (BREAKS)</text>
-     <circle class="guide-puck" cx="0" cy="0" r="6">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M30 80 L80 50 L30 20 L30 20" keyTimes="0; 0.36; 0.74; 1" calcMode="spline" keySplines="0.1 0.7 0.3 1; 0.15 0.55 0.25 1.0; 0 0 1 1"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.76; 0.86; 0.94; 1"/>
-     </circle>
-     <circle class="guide-puck" cx="0" cy="0" r="6">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M180 80 L240 50 L180 20 L180 20" keyTimes="0; 0.36; 0.74; 1" calcMode="spline" keySplines="0.1 0.7 0.3 1; 0.15 0.55 0.25 1.0; 0 0 1 1"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.76; 0.86; 0.94; 1"/>
-     </circle>
-     <circle class="guide-puck" cx="0" cy="0" r="6">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M340 80 L400 50 L450 25 L450 25" keyTimes="0; 0.36; 0.74; 1" calcMode="spline" keySplines="0.1 0.7 0.3 1; 0.15 0.55 0.25 1.0; 0 0 1 1"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.76; 0.86; 0.94; 1"/>
-     </circle>
+     ${guidePuck('M30 80L80 50L30 20', 6)}
+     ${guidePuck('M180 80L240 50L180 20', 6)}
+     ${guidePuck('M340 80L400 50L450 25', 6)}
      <line x1="400" y1="50" x2="388" y2="40" stroke="var(--bone)" stroke-width="1.5">
-       <animate attributeName="opacity" values="0; 0; 1; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.35; 0.38; 0.85"/>
+       <animate attributeName="opacity" values="0; 0; 1; 0; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.35; 0.38; 0.85; 1"/>
      </line>
      <line x1="400" y1="50" x2="412" y2="60" stroke="var(--bone)" stroke-width="1.5">
-       <animate attributeName="opacity" values="0; 0; 1; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.35; 0.38; 0.85"/>
+       <animate attributeName="opacity" values="0; 0; 1; 0; 0" dur="3.0s" repeatCount="indefinite" keyTimes="0; 0.35; 0.38; 0.85; 1"/>
      </line>`,
         // 4: SCORING & VALORANT RANKS - Tier progression and smooth RR gauge
         `<g transform="translate(60, 20)">
@@ -122,10 +116,7 @@ function guideDiagram(section, reduced) {
      <circle class="guide-ghost" cx="210" cy="105" r="10" stroke="var(--grey)" stroke-width="1.5" stroke-dasharray="3 3"/>
      <path class="guide-goal" d="M410 75H450V115H410Z"/>
      <text x="105" y="135">1 / SET UP</text><text x="280" y="135">2 / BANK</text>
-     <circle class="guide-puck" cx="0" cy="0" r="7">
-       <animateMotion dur="3.0s" repeatCount="indefinite" path="M65 105 L210 105 L210 105 L350 28 L430 95 L430 95" keyTimes="0; 0.30; 0.40; 0.60; 0.78; 1" keySplines="0.15 0.6 0.2 1.0; 0 0 1 1; 0.1 0.7 0.3 1; 0.15 0.55 0.25 1.0; 0 0 1 1" calcMode="spline"/>
-       <animate attributeName="opacity" dur="3.0s" repeatCount="indefinite" values="1; 1; 0; 0; 1" keyTimes="0; 0.80; 0.88; 0.94; 1"/>
-     </circle>`
+     ${guidePuck('M65 105L210 105L350 28L430 95', 7)}`
     ];
     return `<svg class="guide-art guide-art-${section}" viewBox="0 0 500 150" fill="none" aria-hidden="true">${kineticDiagrams[section]}</svg>`;
 }
@@ -137,13 +128,27 @@ export class UI {
         root.dataset.screen = 'title';
         root.innerHTML = `<canvas class="arena" tabindex="0" aria-label="BANKSHOT playfield. Pull back from the puck and release. Arrows aim; hold and release Space to shoot. R restarts, H opens help, Escape pauses."></canvas>
   <header class="masthead"><button class="brand" data-action="home" aria-label="BANKSHOT main menu">${icon('b', 'brand-mark')}<span>BANKSHOT <span class="brand-edition mono">/ ENDLESS</span></span></button><span class="masthead-label mono">A GAME OF ANGLES</span></header>
-  <main class="screens"><section class="screen title-screen" data-panel="title" aria-labelledby="title-heading"><div class="title-content"><div class="eyebrow mono">FIND YOUR ANGLE</div><h1 id="title-heading" class="wordmark" aria-label="BANKSHOT"><svg class="wordmark-b" viewBox="0 0 45 66" aria-hidden="true"><defs><clipPath id="b-shape"><path fill-rule="evenodd" d="${B}"/></clipPath></defs><path class="b-trace" fill="none" stroke="currentColor" stroke-width="1" pathLength="1" d="${B}"/><path class="b-fill" fill="currentColor" fill-rule="evenodd" d="${B}"/></svg><span class="wordmark-rest" aria-hidden="true">ANKSHOT</span><i class="wordmark-line" aria-hidden="true"></i></h1><p class="title-subtitle">ONE PUCK. A PERFECT LINE.</p><p class="title-note mono">ENDLESS ROOMS / EVERY ANGLE IS YOURS</p></div><nav class="title-actions" aria-label="Main menu">${button('PLAY', 'play', 'primary play-button')}${button('LEVELS', 'levels')}${button('STATS', 'stats')}${button('HOW TO PLAY', 'guide')}${button('SETTINGS', 'settings')}</nav></section>
+  <main class="screens"><section class="screen title-screen" data-panel="title" aria-labelledby="title-heading"><div class="title-content"><div class="eyebrow mono">FIND YOUR ANGLE</div><h1 id="title-heading" class="wordmark" aria-label="BANKSHOT"><svg class="wordmark-b" viewBox="0 0 45 66" aria-hidden="true"><defs><clipPath id="b-shape"><path fill-rule="evenodd" d="${B}"/></clipPath></defs><path class="b-trace" fill="none" stroke="currentColor" stroke-width="1" pathLength="1" d="${B}"/><path class="b-fill" fill="currentColor" fill-rule="evenodd" d="${B}"/></svg><span class="wordmark-rest" aria-hidden="true">ANKSHOT</span><i class="wordmark-line" aria-hidden="true"></i></h1><p class="title-subtitle">ONE PUCK. A PERFECT LINE.</p><p class="title-note mono">ENDLESS ROOMS / EVERY ANGLE IS YOURS</p></div><nav class="title-actions" aria-label="Main menu">${button('PLAY', 'play', 'primary play-button')}${button('ONLINE RACE', 'race')}${button('LEVELS', 'levels')}${button('PROFILE', 'profile')}${button('STATS', 'stats')}${button('HOW TO PLAY', 'guide')}${button('SETTINGS', 'settings')}</nav></section>
   <section class="screen level-screen" data-panel="levels" hidden><div class="level-content"><div class="screen-heading"><div><div class="eyebrow mono">ONE MORE ANGLE</div><h2>THE ROOMS<span class="heading-period">.</span></h2></div>${button('BACK', 'back', 'small-button')}</div><p class="levels-summary mono">REPLAY TO IMPROVE YOUR RANK. NEW ROOMS UNLOCK IN ORDER.</p><div class="room-scroll" tabindex="0" aria-label="Rooms, scroll for more"><div class="room-space"></div><div class="room-window"></div></div></div></section>
   <section class="screen settings-screen" data-panel="settings" hidden><div class="settings-content"><div class="eyebrow mono">YOUR GAME</div><h2>SETTINGS.</h2><section class="settings-category"><h3>GAMEPLAY & CONTROLS</h3><div class="setting-list">${switcher('AIM PREVIEW', 'aimPreview')}<label class="range-setting" for="touch-sensitivity"><span>TOUCH DRAG SENSITIVITY <output data-sensitivity>1.00×</output></span><input id="touch-sensitivity" type="range" min="0.5" max="2" step="0.05" value="1" data-setting-value="touchSensitivity"><small class="mono">0.5× / LONG PULL <span>2× / SHORT PULL</span></small></label></div></section><section class="settings-category"><h3>VIDEO & ACCESSIBILITY</h3><div class="setting-list"><label class="select-setting" for="reduced-mode"><span>REDUCED MOTION</span><select id="reduced-mode" data-setting-value="reducedMotionMode"><option value="system">SYSTEM</option><option value="on">ON</option><option value="off">OFF</option></select></label>${switcher('HIGH-DPI DISPLAY', 'highDpi')}</div></section><section class="settings-category"><h3>KEYBINDS REFERENCE</h3><dl class="keybind-grid">${[['AIM', 'ARROWS'], ['FINE AIM', 'SHIFT'], ['CHARGE / RELEASE', 'SPACE'], ['RESTART', 'R'], ['HELP', 'H'], ['PAUSE', 'ESC']].map(([label, key]) => '<div><dt>' + label + '</dt><dd><kbd>' + key + '</kbd></dd></div>').join('')}</dl></section>${button('BACK', 'back', 'wide-button')}</div></section>
   <section class="screen overlay-screen" data-panel="pause" role="dialog" aria-modal="true" aria-labelledby="pause-heading" hidden><div class="panel"><div class="eyebrow mono">TAKE YOUR TIME</div><h2 id="pause-heading">PAUSED.</h2>${button('RESUME', 'resume', 'primary wide-button')}${button('HOW TO PLAY', 'guide', 'wide-button')}${button('RESTART', 'restart', 'wide-button')}${button('MAIN MENU', 'title', 'wide-button')}</div></section>
   <section class="screen overlay-screen" data-panel="result" role="dialog" aria-modal="true" aria-labelledby="result-heading" hidden><div class="panel result-panel"><div class="eyebrow mono" data-result-level></div><h2 id="result-heading">ON TARGET.</h2><div class="result-rank mono" data-result-rank></div><div class="result-score mono"><span><b data-result-shots></b> SHOTS</span><span>PAR <b data-result-par></b></span></div><div class="result-performance mono"><span data-result-time></span><span data-result-rating></span></div>${button('NEXT ROOM', 'next', 'primary wide-button')}${button('RETRY', 'restart', 'wide-button')}${button('THE ROOMS', 'levels', 'wide-button')}</div></section>
+  <section class="screen profile-screen" data-panel="profile" hidden aria-labelledby="profile-heading">
+    <div class="profile-content">
+      <div class="screen-heading"><div><div class="eyebrow mono">PERSONNEL FILE</div><h2 id="profile-heading">PROFILE.</h2></div>${button('BACK','back','small-button')}</div>
+      <div class="profile-dossier">
+        <header class="profile-identity"><div><span class="eyebrow mono">AGENT DOSSIER</span><strong class="mono" data-agent-token>IDENTIFYING…</strong></div>${button('COPY TOKEN','profile-copy','small-button','disabled')}</header>
+        <label class="profile-field"><span>CALL-SIGN</span><input type="text" maxlength="24" data-profile-callsign autocomplete="off"></label>
+        ${button('SAVE CALL-SIGN','profile-rename','small-button','disabled')}
+        <div class="profile-competition"><div data-profile-emblem></div><div><span class="eyebrow mono">ONLINE RACE RATING</span><strong data-profile-rank>—</strong></div></div>
+        <dl class="profile-metrics mono"><div><dt>WINS</dt><dd data-profile-wins>0</dd></div><div><dt>LOSSES</dt><dd data-profile-losses>0</dd></div><div><dt>WIN RATE</dt><dd data-profile-win-rate>0%</dd></div><div><dt>CAMPAIGN PEAK</dt><dd data-profile-peak>IRON I</dd></div><div><dt>PAR OR BETTER</dt><dd data-profile-par>0%</dd></div></dl>
+        <details class="profile-recovery"><summary>PROFILE RECOVERY</summary><p>Save your recovery code to open this dossier in another browser.</p>${button('COPY RECOVERY CODE','profile-export','small-button','disabled')}<label class="profile-field"><span>RECOVERY CODE</span><input type="text" data-profile-recovery maxlength="100" autocomplete="off" spellcheck="false"></label>${button('RESTORE PROFILE','profile-recover','small-button')}</details>
+        <p class="profile-status mono" data-profile-status role="status">LOADING PROFILE</p>
+      </div>
+    </div>
+  </section>
   <section class="screen overlay-screen" data-panel="stats" role="dialog" aria-modal="true" aria-labelledby="stats-heading" hidden><div class="panel stats-panel"><div class="eyebrow mono">YOUR TRAJECTORY</div><h2 id="stats-heading">STATS.</h2><div data-stats></div>${button('BACK', 'back', 'wide-button')}</div></section></main>
-  <section class="hud" aria-label="Game status" hidden><div class="hud-left"><div class="eyebrow mono" data-chapter></div><div class="hud-level-number mono"><span class="hud-label">ROOM</span> <b data-level-number>01</b></div><h2 class="hud-level-name" data-level-name></h2><dl class="hud-metrics mono"><div><dt>SHOTS</dt><dd data-shots>0</dd></div><div><dt>PAR</dt><dd data-par>1</dd></div><div><dt>TRIES LEFT</dt><dd data-tries>3</dd></div><div><dt>STREAK</dt><dd data-streak>0W</dd></div><div><dt>TIME</dt><dd data-elapsed>0.0s</dd></div></dl><span class="shot-status mono" data-shot-status>READY</span></div><div class="hud-right">${button('?', 'guide', 'hud-button', 'aria-label="How to play (H)"')}${button('RESTART', 'restart', 'hud-button', 'aria-label="Restart room (R)"')}${button('MENU', 'pause', 'hud-button', 'aria-label="Pause game (Escape)"')}</div><div class="power-readout" hidden><div class="power-label mono"><span>POWER</span><span data-power></span></div><div class="power-track"><span class="power-fill"></span></div></div></section>
+  <section class="hud" aria-label="Game status" hidden><div class="hud-left"><div class="eyebrow mono" data-chapter></div><div class="hud-level-number mono"><span class="hud-label">ROOM</span> <b data-level-number>01</b></div><h2 class="hud-level-name" data-level-name></h2></div><div class="hud-meters"><dl class="hud-metrics mono"><div><dt>SHOTS</dt><dd data-shots>0</dd></div><div><dt>PAR</dt><dd data-par>1</dd></div><div><dt>TRIES LEFT</dt><dd data-tries>3</dd></div><div><dt>STREAK</dt><dd data-streak>0W</dd></div><div><dt>TIME</dt><dd data-elapsed>0.0s</dd></div></dl><span class="shot-status mono" data-shot-status>READY</span></div><div class="hud-right">${button('?', 'guide', 'hud-button', 'aria-label="How to play (H)"')}${button('RESTART', 'restart', 'hud-button', 'aria-label="Restart room (R)"')}${button('MENU', 'pause', 'hud-button', 'aria-label="Pause game (Escape)"')}</div><div class="power-readout" hidden><div class="power-label mono"><span>POWER</span><span data-power></span></div><div class="power-track"><span class="power-fill"></span></div></div></section>
   <footer class="footer"><span class="footer-motto">LESS FORCE<span class="footer-slash">/</span>MORE FINESSE</span><span class="input-prompt mono" data-input-label>DRAG & RELEASE</span><span class="footer-version mono">ENDLESS / V.3</span></footer>
   <div class="guide-backdrop" hidden><section class="guide-dialog" role="dialog" aria-modal="true" aria-labelledby="guide-heading"><div class="guide-heading"><div><div class="eyebrow mono">FIND YOUR ANGLE</div><h2 id="guide-heading">HOW TO PLAY.</h2></div>${button('×', 'guide-close', 'guide-close', 'aria-label="Close guide"')}</div><div class="guide-tabs" role="tablist" aria-label="Guide sections">${['BASICS & CONTROLS', 'PHYSICS & SURFACES', 'NEW ELEMENTS', 'RANKED LADDER & MMR', 'PRACTICE SANDBOX', 'PRO TIPS'].map((t, i) => `<button type="button" role="tab" id="guide-tab-${i}" aria-controls="guide-content" aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}" data-guide-tab="${i}">${t}</button>`).join('')}<span class="tab-accent" aria-hidden="true"></span></div><div id="guide-content" class="guide-content" role="tabpanel" tabindex="0" aria-labelledby="guide-tab-0"></div><div class="guide-footer mono"><span>← → SECTIONS / 1–6 JUMP</span><span>ESC CLOSE</span></div></section></div><div class="chapter-card" hidden role="status"><span class="eyebrow mono" data-chapter-number></span><h2 data-chapter-title></h2><span class="chapter-rule"></span></div><div class="sr-only" role="status" aria-live="polite" data-announcement></div>`;
         this.hudRefs = Object.fromEntries(['shots', 'tries', 'shot-status', 'power', 'streak', 'elapsed'].map(key => [key, root.querySelector('[data-' + key + ']')]));
@@ -155,6 +160,7 @@ export class UI {
         this.hud = root.querySelector('.hud');
         this.announcement = root.querySelector('[data-announcement]');
         root.addEventListener('input', event => {
+            if (event.target.matches('[data-profile-callsign]')) event.target.dataset.edited = 'true';
             const control = event.target.closest('[data-setting-value]');
             if (!control)
                 return;
@@ -215,6 +221,14 @@ export class UI {
         this.actions(target.dataset.action, target.dataset);
     };
     keyDown = event => {
+        if (this.screen === 'profile' && event.target.matches('[data-profile-callsign], [data-profile-recovery]')) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                this.actions(event.target.matches('[data-profile-callsign]') ? 'profile-rename' : 'profile-recover');
+            }
+            if (!['Escape','Tab'].includes(event.key)) event.stopPropagation();
+            return;
+        }
         const roomButton = event.target.closest('.room-row');
         if (!this.guideOpen && this.screen === 'levels' && roomButton) {
             const id = +roomButton.dataset.index;
@@ -267,9 +281,11 @@ export class UI {
         }
         if (event.key !== 'Tab' || !panel || (!guide && !['pause', 'result', 'stats'].includes(this.screen)))
             return;
-        const controls = [...panel.querySelectorAll('button:not(:disabled),[tabindex="0"]')];
+        const controls = [...panel.querySelectorAll('button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex="0"]')].filter(el => !el.hidden && !el.closest('[hidden]') && el.getClientRects().length);
         const first = controls[0], last = controls.at(-1);
-        if (event.shiftKey && document.activeElement === first) {
+        if (!first) return;
+        if (!panel.contains(document.activeElement)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+        else if (event.shiftKey && document.activeElement === first) {
             event.preventDefault();
             last.focus();
         }
@@ -299,6 +315,32 @@ export class UI {
         if (!this.guideOpen)
             focus?.focus({ preventScroll: true });
     }
+    renderProfile(profile) {
+        const q = selector => this.root.querySelector(selector);
+        const token = profile?.id ? profile.agentToken : '';
+        q('[data-agent-token]').textContent = token || 'IDENTIFYING…';
+        for (const action of ['profile-copy','profile-export','profile-rename']) q(`[data-action="${action}"]`).disabled = !token;
+        const field = q('[data-profile-callsign]');
+        if (field !== document.activeElement && !field.dataset.edited) field.value = profile?.callsign || '';
+        const online = profile?.online ?? {};
+        const rank = getRankFromElo(online.elo ?? 0);
+        q('[data-profile-rank]').textContent = `${rank.label} / ${online.elo ?? 0} ELO`;
+        q('[data-profile-emblem]').innerHTML = getRankEmblemSVG(rank.tier, rank.division, rank.color);
+        const wins = online.wins ?? 0;
+        const losses = online.losses ?? 0;
+        q('[data-profile-wins]').textContent = wins;
+        q('[data-profile-losses]').textContent = losses;
+        q('[data-profile-win-rate]').textContent = `${wins + losses ? Math.round(wins * 100 / (wins + losses)) : 0}%`;
+        const peak = Math.max(this.store.data.rank?.peakElo ?? 0, profile?.campaign?.peakElo ?? 0);
+        q('[data-profile-peak]').textContent = getRankFromElo(peak).label;
+        const records = Object.values({...profile?.campaign?.levelRecords, ...this.store.data.levelRecords});
+        const atPar = records.filter(record => record.bestShots <= record.par).length;
+        q('[data-profile-par]').textContent = `${records.length ? Math.round(atPar * 100 / records.length) : 0}%`;
+        this.profileNotice(profile?.status === 'online' ? 'RELAY CONNECTED' : profile?.status === 'offline' ? 'OFFLINE PROFILE / CHANGES SAVED ON THIS DEVICE' : 'LOADING PROFILE');
+    }
+    profileNotice(message) {
+        this.root.querySelector('[data-profile-status]').textContent = message;
+    }
     renderLevels() {
         const focusedId = document.activeElement?.closest('.room-row')?.dataset.index;
         const scroller = this.root.querySelector('.room-scroll');
@@ -310,21 +352,44 @@ export class UI {
         const host = this.root.querySelector('.room-window');
         host.style.transform = `translateY(${first * row}px)`;
         this.root.querySelector('.room-space').style.height = `${this.roomHorizon * row}px`;
-        let html = '';
+        this.roomRows ??= new Map();
+        const wanted = new Set();
         for (let i = first + 1; i <= end; i++) {
+            wanted.add(i);
             const room = this.getRoom(i);
             const unlocked = this.store.canPlay(i);
             const record = this.store.data.levelRecords?.[i];
-            html += `<button class="button room-row ${unlocked ? '' : 'locked'}" type="button" data-action="level" data-index="${i}" data-level="${i}" ${unlocked ? '' : 'disabled'} aria-label="Room ${i}: ${escape(room.name)}, par ${room.par}${unlocked ? '' : ', locked'}${record ? `, rank ${record.rank}, best ${record.bestShots} shots` : ''}"><span class="button-surface"><span class="button-sweep"></span></span><span class="mono room-id"><small>ROOM</small>${String(i).padStart(2, '0')}</span><canvas width="80" height="52" class="room-mini" data-mini="${i}" aria-hidden="true"></canvas><span class="button-label room-name">${escape(room.name)}<small class="mono">PAR ${room.par}</small></span><span class="mono room-best">${record ? `${record.bestShots} SHOTS` : unlocked ? 'READY' : '<svg class="room-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M6 10H18V21H6ZM8 10V6A4 4 0 0 1 16 6V10"/></svg><span>LOCKED</span>'}</span><span class="mono room-rank">${record?.rank || '—'}</span><span class="button-line"></span></button>`;
+            const markup = `<button class="button room-row ${unlocked ? '' : 'locked'}" type="button" data-action="level" data-index="${i}" data-level="${i}" ${unlocked ? '' : 'disabled'} aria-label="Room ${i}: ${escape(room.name)}, par ${room.par}${unlocked ? '' : ', locked'}${record ? `, rank ${record.rank}, best ${record.bestShots} shots` : ''}"><span class="button-surface"><span class="button-sweep"></span></span><span class="mono room-id"><small>ROOM</small>${String(i).padStart(2, '0')}</span><canvas width="80" height="52" class="room-mini" data-mini="${i}" aria-hidden="true"></canvas><span class="button-label room-name">${escape(room.name)}<small class="mono">PAR ${room.par}</small></span><span class="mono room-best">${record ? `${record.bestShots} SHOTS` : unlocked ? 'READY' : '<svg class="room-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M6 10H18V21H6ZM8 10V6A4 4 0 0 1 16 6V10"/></svg><span>LOCKED</span>'}</span><span class="mono room-rank">${record?.rank || '—'}</span><span class="button-line"></span></button>`;
+            let element = this.roomRows.get(i);
+            if (!element) {
+                const template = document.createElement('template');
+                template.innerHTML = markup;
+                element = template.content.firstElementChild;
+                this.roomRows.set(i, element);
+                const next = [...host.children].find(child => +child.dataset.index > i);
+                host.insertBefore(element, next || null);
+            } else if (element.dataset.signature !== markup) {
+                const template = document.createElement('template'); template.innerHTML = markup;
+                element.replaceChildren(...template.content.firstElementChild.childNodes);
+                element.disabled = !unlocked;
+                element.classList.toggle('locked', !unlocked);
+                element.setAttribute('aria-label', template.content.firstElementChild.getAttribute('aria-label'));
+            }
+            if (element.dataset.signature !== markup) {
+                element.dataset.signature = markup;
+                this.drawMini(element.querySelector('canvas'), room);
+            }
         }
-        host.innerHTML = html;
-        for (const mini of host.querySelectorAll('canvas'))
-            this.drawMini(mini, this.getRoom(+mini.dataset.mini));
-        if (focusedId)
-            this.root.querySelector('.room-row[data-index="' + focusedId + '"]')?.focus({ preventScroll: true });
+        const focused = focusedId && this.roomRows.get(+focusedId);
+        for (const [index, element] of this.roomRows) {
+            if (!wanted.has(index) && element !== focused) { element.remove(); this.roomRows.delete(index); }
+            else if (!wanted.has(index)) { element.style.position = 'absolute'; element.style.top = `${(index - first - 1) * row}px`; }
+            else { element.style.position = ''; element.style.top = ''; }
+        }
     }
     drawMini(canvas, room) {
         const c = canvas.getContext('2d');
+        c.setTransform(1,0,0,1,0,0); c.clearRect(0,0,canvas.width,canvas.height);
         c.scale(canvas.width / CONFIG.world.width, canvas.height / CONFIG.world.height);
         c.strokeStyle = '#5B6670';
         c.lineWidth = 20;
@@ -377,9 +442,10 @@ export class UI {
         const moving = world.status === 'moving';
         const max = typeof world.budget === 'number' ? world.budget : world.budget?.max ?? world.budget?.tries ?? world.budget?.maxTries;
         const values = { streak: world.winStreak ? ((world.winStreak >= 3 ? '🔥 ' : '') + world.winStreak + 'W') : world.lossStreak ? world.lossStreak + 'L' : '0W', elapsed: (Math.floor((world.time || 0) * 10) / 10).toFixed(1) + 's', shots: world.shots, tries: Math.max(0, (max ?? world.maxTries ?? this.level?.par + 2) - world.shots), 'shot-status': moving ? 'IN MOTION' : world.status === 'won' ? 'ON TARGET' : world.lastOutcome === 'hazard' ? 'HAZARD / RESET' : 'READY' };
-        if (this.hudCache.moving !== moving) {
-            this.hud.classList.toggle('is-moving', moving);
-            this.hudCache.moving = moving;
+        const dimmed = moving && arenaEdges.some(edge => (world.x - edge.x) * edge.nx + (world.y - edge.y) * edge.ny < 80);
+        if (this.hudCache.dimmed !== dimmed) {
+            this.hud.classList.toggle('near-edge', dimmed);
+            this.hudCache.dimmed = dimmed;
         }
         for (const key of Object.keys(values)) {
             if (this.hudCache[key] !== values[key]) {
@@ -505,14 +571,14 @@ export class UI {
         const sections = [
             ['ONE PUCK. A PERFECT LINE.', 'Mouse or touch: pull backward from the puck, then release toward your goal. Short pulls make soft shots. Keyboard: arrows aim, Shift makes fine adjustments, and holding Space builds power; release to shoot. R restarts, Escape pauses, and H opens this guide. Clear the orange goal within your shot budget to unlock the next room.'],
             ['READ THE REFLECTION.', 'Angle in equals angle out. Solid walls return ' + Math.round(p.restitution.solid * 100) + '% speed; rubber returns ' + Math.round(p.restitution.rubber * 100) + '%. Glass breaks above ' + p.glassThreshold + ' impact speed, retaining ' + Math.round(p.glassRetention * 100) + '%; softer impacts bounce. Damping slows every shot. Hazards reset the whole room and its shots. The trajectory preview helps you read your first reflection.'],
-            ['FOUR NEW WAYS THROUGH.', 'Moving walls (room 15+) oscillate along their marked tracks: time your shot. Pinball bumpers (25+) reflect and boost the puck outward. Portals (35+) preserve motion through paired cyan entrances and rotate your exit direction. Gravity wells (50+) bend nearby motion toward their centre. The goal stays the same: read the geometry and control your momentum.'],
+            ['FOUR NEW WAYS THROUGH.', 'Moving walls (room 15+) oscillate along their marked tracks: time your shot. Pinball bumpers (25+) reflect and boost the puck outward. Moving portals (31+) accept shots from every direction; cyan and blue rings pair together. Time the orbit and read the exit chevron. Gravity wells (50+) bend nearby motion toward their centre. The goal stays the same: read the geometry and control your momentum.'],
             ['EARN EVERY DIVISION.', '2 RR = 1 ELO. Hidden MMR adjusts gains toward your demonstrated skill. Efficient, fast, first-attempt clears earn more; over-par clears earn less. Win streak multipliers reach 1.4×; repeated losses increase penalties. One loss above 0 RR can land on your division floor; losing at 0 RR demotes you to the previous division at 70 RR. Select any emblem to inspect its threshold.'],
-            ['CALIBRATE YOUR TOUCH.', 'Practice freely with a rubber wall, pinball bumper and paired portals. Pull from the puck and release. Focus the canvas to use arrows and Space. Reset any time. This world has no career, rating or progression effects.'],
+            ['CALIBRATE YOUR TOUCH.', 'Practice with a rubber wall, moving wall, bumper, paired portals, gravity well and hazard. Pull from the puck and release. Keyboard: arrows aim; hold Space to charge and release to shoot. Select a toolbar object and click to place it. Walls, portal pairs and hazards use two clicks. R resets everything. This world has no career, rating or progression effects.'],
             ['SEE THE SECOND ANGLE.', '1. Bank off corners to reach hidden lanes. 2. Use low power to set up a clean second shot. 3. Break glass to open a direct route. 4. Preserve momentum with rubber and bumpers; reduce power before gravity wells. 5. Hold Shift for precise keyboard aiming and soft positioning.']
         ];
         let art = n === 0 ? guideDiagram(1, reduced) : n === 1 ? guideDiagram(2, reduced) : n === 5 ? guideDiagram(5, reduced) : '';
         if (n === 2)
-            art = '<div class="element-showcase">' + [['MOVING WALL', '15', 'moving'], ['PINBALL BUMPER', '25', 'bumper'], ['PAIRED PORTALS', '35', 'portal'], ['GRAVITY WELL', '50', 'gravity']].map(([label, room, kind]) => '<div class="element-demo ' + kind + '"><span class="element-vector" aria-hidden="true"></span><b>' + label + '</b><small class="mono">ROOM ' + room + '+</small></div>').join('') + '</div>';
+            art = '<div class="element-showcase">' + [['MOVING WALL', '15', 'moving'], ['PINBALL BUMPER', '25', 'bumper'], ['MOVING PORTALS', '31', 'portal'], ['GRAVITY WELL', '50', 'gravity']].map(([label, room, kind]) => '<div class="element-demo ' + kind + '"><span class="element-vector" aria-hidden="true"></span><b>' + label + '</b><small class="mono">ROOM ' + room + '+</small></div>').join('') + '</div>';
         panel.innerHTML = art + '<h3>' + sections[n][0] + '</h3><p>' + sections[n][1] + '</p>';
         if (n === 3) {
             const groups = [['Iron', '#8B97A2'], ['Bronze', '#CD7F32'], ['Silver', '#B8C6CE'], ['Gold', '#E6C229'], ['Platinum', '#40C5C0'], ['Diamond', '#BA68C8'], ['Ascendant', '#41BB83'], ['Immortal', '#EC526C'], ['Radiant', '#FFD700']];
@@ -521,8 +587,8 @@ export class UI {
             this.selectLadder(Math.min(24, this.store.getRankInfo?.().tierIndex || 0));
         }
         if (n === 4) {
-            panel.insertAdjacentHTML('beforeend', '<canvas class="practice-canvas" width="1200" height="800" tabindex="0" aria-label="Practice sandbox. Pull backward from the puck to shoot, or focus and use arrows and Space."></canvas><div class="sandbox-footer"><span class="mono" data-sandbox-status></span><button type="button" class="sandbox-reset" data-sandbox-reset>RESET PRACTICE</button></div>');
-            this.sandbox = new Sandbox(panel.querySelector('canvas'), panel.querySelector('[data-sandbox-status]'), this.settings?.touchSensitivity || 1);
+            panel.insertAdjacentHTML('beforeend', '<canvas class="practice-canvas" width="1600" height="900" tabindex="0" aria-label="Practice sandbox. Pull backward from the puck to shoot, or focus and use arrows and Space."></canvas><div class="sandbox-footer"><span class="mono" data-sandbox-status></span><button type="button" class="sandbox-reset" data-sandbox-reset>RESET PRACTICE</button></div>');
+            this.sandbox = new Sandbox(panel.querySelector('canvas'), panel.querySelector('[data-sandbox-status]'), this.settings?.touchSensitivity || 1, this.settings);
         }
     }
     selectLadder(index) {

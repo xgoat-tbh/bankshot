@@ -3,6 +3,27 @@ import assert from 'node:assert/strict';
 import * as state from '../src/state.js';
 const memory = (entries = {}) => ({ getItem: key => entries[key] ?? null, setItem: (key, value) => { entries[key] = value; }, entries });
 const make = () => state.createStore(memory());
+
+test('profile restore adopts the campaign seed and restores clears while keeping device settings', () => {
+ const restored = make(); restored.setSetting('highDpi', false);
+ const campaign = make(); campaign.recordShot(); campaign.recordSuccess({id:1,par:1},1);
+ assert.equal(restored.importProfileCampaign(campaign.data),true);
+ assert.equal(restored.data.userSeed,campaign.data.userSeed);
+ assert.equal(restored.data.maxUnlocked,2);
+ assert.equal(restored.data.currentLevel,2);
+ assert.equal(restored.data.stats.totalShotsFired,1);
+ assert.equal(restored.data.elo,campaign.data.elo);
+ assert.equal(restored.data.settings.highDpi,false);
+});
+
+test('concurrent tabs merge independent clears and every fired shot', () => {
+ const storage = memory(); const first = state.createStore(storage); const second = state.createStore(storage);
+ first.recordShot(); second.recordShot(); first.recordSuccess({id:1,par:1},1);
+ second.sync(); assert.equal(second.data.maxUnlocked,2); second.select(2); second.recordSuccess({id:2,par:1},1);
+ first.sync(); assert.equal(first.data.maxUnlocked,3); assert.equal(first.data.stats.totalShotsFired,2);
+ let notifications=0; const unsubscribe=first.subscribe(()=>notifications++); second.setSetting('aimPreview',false); first.sync();
+ assert.equal(first.data.settings.aimPreview,false); assert.equal(notifications,1); unsubscribe(); first.destroy(); second.destroy();
+});
 test('v3 uses one-based sequential unlocks and persists a UUID', () => {
  const storage = memory(); const s = state.createStore(storage);
  assert.equal(s.data.version, 3); assert.match(s.data.userSeed, /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i);
@@ -54,7 +75,9 @@ test('malformed fields repair without losing valid settings or seed', () => {
  storage.entries['bankshot.db.v3']=JSON.stringify({version:3,userSeed:original,currentLevel:999,maxUnlocked:999,stats:{totalShotsFired:-2,recentShots:[1,null,-2,2]},levelRecords:{1:{bestShots:2,bestRank:'A',par:1},3:{bestShots:1,bestRank:'S',par:1}},settings:{aimPreview:false,reducedMotion:'yes'}});
  const s=state.createStore(storage); assert.equal(s.data.userSeed,original); assert.equal(s.data.maxUnlocked,2); assert.equal(s.data.currentLevel,2);
  assert.equal(s.data.settings.aimPreview,false); assert.equal(s.data.settings.reducedMotion,false); assert.equal(s.data.stats.totalShotsFired,0);
- assert.deepEqual(s.data.stats.recentShots,[1,2]); assert.equal(s.data.stats.levelsCompleted,1);
+ assert.deepEqual(s.data.stats.recentShots,[1,2]); assert.equal(s.data.stats.levelsCompleted,2);
+ assert.equal(s.data.levelRecords[3].bestShots,1);
+ s.recordSuccess({id:2,par:1},1); assert.equal(s.data.maxUnlocked,4);
 });
 test('corrupt JSON is replaced and denied storage remains playable', () => {
  const storage=memory({'bankshot.db.v3':'{broken'}); const s=state.createStore(storage);
@@ -96,9 +119,17 @@ test('streaks reset on outcome change and promotions report latest actual result
  const s=make();s.data.elo=47;s.data.mmr=47;s.recordSuccess({id:1,par:1},1,1,4,20,false);assert.equal(s.data.elo,52);assert.equal(s.getRankInfo().justPromoted,true);assert.equal(s.getRankInfo().promotedTier.label,'IRON II');assert.equal(s.getRankInfo().deltaElo,5);
  s.recordSuccess({id:2,par:1},1,1,4,20,false);assert.equal(s.data.winStreak,2);s.recordFailure();assert.equal(s.data.winStreak,0);assert.equal(s.data.lossStreak,1);assert.equal(s.getRankInfo().justPromoted,false);
 });
-test('active attempt reload counts one loss and blocks clean bonus cheating',()=>{
- const storage=memory();let s=state.createStore(storage);s.recordShot();s.recordShot();s=state.createStore(storage);assert.equal(s.data.roomFailures[1],1);assert.equal(s.data.lossStreak,1);assert.equal(s.data.stats.totalShotsFired,2);s=state.createStore(storage);assert.equal(s.data.lossStreak,1);
- s.recordSuccess({id:1,par:1},1,1,3,20,true);assert.equal(s.data.mmr,6);assert.equal(s.data.activeAttempt,null);
+test('passive reload preserves rank and does not turn an unfinished shot into a loss',()=>{
+ const storage=memory();let s=state.createStore(storage);s.data.elo=75;s.data.mmr=80;s.recordShot();s.recordShot();
+ s=state.createStore(storage);assert.equal(s.data.roomFailures[1],undefined);assert.equal(s.data.lossStreak,0);assert.equal(s.data.stats.totalShotsFired,2);
+ assert.equal(s.data.elo,75);assert.equal(s.data.mmr,80);assert.equal(s.data.activeAttempt,null);
+ s=state.createStore(storage);assert.equal(s.data.elo,75);
+});
+
+test('invalid records do not discard later valid records or unlock gaps',()=>{
+ const storage=memory({'bankshot.db.v3':JSON.stringify({version:3,levelRecords:{1:{bestShots:1,par:1,rank:'A'},2:{bestShots:-1,par:1,rank:'A'},4:{bestShots:2,par:2,rank:'A'}}})});
+ const s=state.createStore(storage);assert.equal(s.data.maxUnlocked,2);assert.equal(s.data.levelRecords[4].bestShots,2);assert.equal(s.canPlay(4),false);
+ assert.equal(state.createStore(storage).data.levelRecords[4].bestShots,2);
 });
 test('production settings validate types ranges and persist',()=>{
  const storage=memory();let s=state.createStore(storage);assert.equal(s.setSetting('touchSensitivity',0.5),true);assert.equal(s.setSetting('touchSensitivity',2),true);assert.equal(s.setSetting('touchSensitivity',2.01),false);assert.equal(s.setSetting('touchSensitivity','1'),false);assert.equal(s.toggle('touchSensitivity'),false);assert.equal(s.setSetting('highDpi',false),true);assert.equal(s.setSetting('reducedMotionMode','off'),true);assert.equal(s.setSetting('reducedMotionMode','bogus'),false);s=state.createStore(storage);assert.equal(s.data.settings.touchSensitivity,2);assert.equal(s.data.settings.highDpi,false);assert.equal(s.data.settings.reducedMotionMode,'off');

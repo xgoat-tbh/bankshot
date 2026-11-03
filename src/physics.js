@@ -52,8 +52,8 @@ export function sweepCircleSegment(x, y, vx, vy, radius, wall, maxTime, out) {
     const c = ox * ox + oy * oy - radius * radius;
     if (projection >= 0) continue;
     const discriminant = projection * projection - speedSquared * c;
-    if (discriminant < 0) continue;
-    let time = c < 0 ? 0 : (-projection - Math.sqrt(discriminant)) / speedSquared;
+    if (discriminant < -P.epsilon * speedSquared) continue;
+    let time = c < 0 ? 0 : (-projection - Math.sqrt(Math.max(0, discriminant))) / speedSquared;
     if (time < -P.epsilon || time > limit + P.epsilon || time >= out.time) continue;
     time = Math.max(0, time);
     const nx = ox + vx * time;
@@ -106,13 +106,37 @@ export function createWorld(level) {
     collision: collisionResult(), preview: collisionResult(), version: 0,
     impacts: 0, breaks: 0, failures: 0, lastOutcome: '',
     movingWalls: (level.movingWalls ?? []).map(item => ({ ...compileWall({ ...item, mat: item.mat ?? 'solid' }), baseA: [...item.a], baseB: [...item.b], delta: [...item.delta], freq: item.freq ?? 1, phase: item.phase ?? 0, active: item.active !== false, vx: 0, vy: 0 })),
-    bumpers: (level.bumpers ?? []).map(item => ({ restitution: 1.25, ...item, hitAt: -Infinity })),
-    portals: (level.portals ?? []).map(item => ({ ...item, A: { ...item.A }, B: { ...item.B }, cooldown: 0 })),
-    gravityWells: (level.gravityWells ?? []).map(item => ({ radius: 100, strength: 1800, ...item })),
+    bumpers: (level.bumpers ?? []).map(item => ({ ...P.bumpers, ...item, hitAt: -Infinity })),
+    portals: (level.portals ?? []).map(item => ({ ...item, A: portalFrame(item.A), B: portalFrame(item.B), cooldown: 0, hitAt: -Infinity })),
+    gravityWells: (level.gravityWells ?? []).map(item => ({ ...P.gravityWells, ...item })),
     teleports: 0,
   };
   updateMovingWalls(world);
+  updatePortals(world);
   return world;
+}
+
+function portalFrame(portal) {
+  const length = Math.hypot(portal.nx ?? 1, portal.ny ?? 0) || 1;
+  return { ...portal, baseX: portal.x, baseY: portal.y, vx: 0, vy: 0, nx: (portal.nx ?? 1) / length, ny: (portal.ny ?? 0) / length };
+}
+
+export function samplePortal(portal, time) {
+  const motion = portal.motion;
+  if (!motion) return portal;
+  const ay = motion.amplitude?.[1] ?? 35;
+  const frequency = (motion.frequency ?? 0.5) * Math.PI * 2;
+  const phase = frequency * time + (motion.phase ?? 0);
+  return { ...portal,
+    x: portal.baseX ?? portal.x,
+    y: (portal.baseY ?? portal.y) + ay * Math.sin(phase),
+    vx: 0,
+    vy: ay * frequency * Math.cos(phase),
+  };
+}
+
+function updatePortals(world, time = world.time) {
+  for (const pair of world.portals) for (const portal of [pair.A, pair.B]) if (portal.motion) Object.assign(portal, samplePortal(portal, time));
 }
 
 function updateMovingWalls(world, time = world.time) {
@@ -136,8 +160,8 @@ function circleSweep(x, y, vx, vy, cx, cy, radius, maxTime, out) {
   if (speed < P.epsilon || projection >= 0) return;
   const c = ox * ox + oy * oy - radius * radius;
   const discriminant = projection * projection - speed * c;
-  if (discriminant < 0) return;
-  const time = c <= 0 ? 0 : (-projection - Math.sqrt(discriminant)) / speed;
+  if (discriminant < -P.epsilon * speed) return;
+  const time = c <= 0 ? 0 : (-projection - Math.sqrt(Math.max(0, discriminant))) / speed;
   if (time > maxTime || time >= out.time || time < 0) return;
   const nx = ox + vx * time;
   const ny = oy + vy * time;
@@ -148,27 +172,70 @@ function circleSweep(x, y, vx, vy, cx, cy, radius, maxTime, out) {
   out.ny = ny / distance;
 }
 
-function portalCollision(world, x, y, vx, vy, maxTime, excluded = null) {
+function portalCollision(world, x, y, vx, vy, maxTime, excluded = null, movingOffset = 0) {
   const hit = { time: Infinity, pair: null, entrance: null, exit: null };
   for (const pair of world.portals) {
-    if (pair === excluded || pair.cooldown > 0) continue;
+    if (pair === excluded || pair.active === false || pair.cooldown > 0) continue;
     for (const [entrance, exit] of [[pair.A, pair.B], [pair.B, pair.A]]) {
-      if (vx * entrance.nx + vy * entrance.ny >= -P.epsilon) continue;
       const candidate = collisionResult();
-      circleSweep(x, y, vx, vy, entrance.x, entrance.y, entrance.radius, maxTime, candidate);
-      if (candidate.time < hit.time) Object.assign(hit, { time: candidate.time, pair, entrance, exit });
+      const entry = samplePortal(entrance, world.time - (world.stepDuration ?? P.step) + movingOffset);
+      circleSweep(x, y, vx - entry.vx, vy - entry.vy, entry.x, entry.y, entrance.radius + R, maxTime, candidate);
+      if (candidate.time < hit.time) {
+        const eventTime = world.time - (world.stepDuration ?? P.step) + movingOffset + candidate.time;
+        const destination = portalExit(world, { entrance: samplePortal(entrance, eventTime), exit: samplePortal(exit, eventTime) }, vx, vy);
+        if (destination) Object.assign(hit, { time: candidate.time, pair, entrance, exit, destination });
+      }
     }
   }
   return hit;
 }
 
-function portalExit(hit, vx, vy) {
-  // Incoming direction points against entrance normal; outgoing follows exit normal.
-  const angle = Math.atan2(hit.exit.ny, hit.exit.nx) - Math.atan2(-hit.entrance.ny, -hit.entrance.nx);
-  const cosine = Math.cos(angle);
-  const sine = Math.sin(angle);
+function portalExit(world, hit, vx, vy) {
+  // A freestanding entrance accepts either face. Preserve tangent chirality in
+  // the selected entrance frame and emit along the exit's outward normal.
+  vx -= hit.entrance.vx ?? 0;
+  vy -= hit.entrance.vy ?? 0;
+  const normalSpeed = vx * hit.entrance.nx + vy * hit.entrance.ny;
+  const side = normalSpeed > 0 ? -1 : 1;
+  const tangentSpeed = (-vx * hit.entrance.ny + vy * hit.entrance.nx) * side;
+  let outVx = Math.abs(normalSpeed) * hit.exit.nx - tangentSpeed * hit.exit.ny + (hit.exit.vx ?? 0);
+  let outVy = Math.abs(normalSpeed) * hit.exit.ny + tangentSpeed * hit.exit.nx + (hit.exit.vy ?? 0);
+  const magnitude = Math.hypot(outVx, outVy);
+  if (magnitude > P.maxSpeed) { outVx *= P.maxSpeed / magnitude; outVy *= P.maxSpeed / magnitude; }
   const clearance = hit.exit.radius + R + P.separation;
-  return { x: hit.exit.x + hit.exit.nx * clearance, y: hit.exit.y + hit.exit.ny * clearance, vx: vx * cosine - vy * sine, vy: vx * sine + vy * cosine };
+  const speed = Math.hypot(outVx, outVy);
+  const dx = speed ? outVx / speed : hit.exit.nx;
+  const dy = speed ? outVy / speed : hit.exit.ny;
+  for (let offset = 0; offset <= P.portals.exitSearch; offset += R * 2) {
+    for (const side of offset ? [-1, 1] : [0]) {
+      const x = hit.exit.x + hit.exit.nx * clearance - hit.exit.ny * offset * side;
+      const y = hit.exit.y + hit.exit.ny * clearance + hit.exit.nx * offset * side;
+      // Check both the route out of the portal and its launch corridor. Never
+      // jump through a nearby wall while searching for a free tangent offset.
+      if (!clearPortalRoute(world, hit.exit.x, hit.exit.y, x, y)) continue;
+      if (!clearPortalRoute(world, x, y, x + dx * P.portals.exitClearance, y + dy * P.portals.exitClearance)) continue;
+      return { x, y, vx: outVx, vy: outVy };
+    }
+  }
+  return null;
+}
+
+function clearPortalRoute(world, x, y, endX, endY) {
+  const dx = endX - x, dy = endY - y;
+  const hit = collisionResult();
+  for (const wall of [...world.walls, ...world.movingWalls]) {
+    if (!wall.active) continue;
+    const along = wall.length ? Math.max(0, Math.min(1, ((x - wall.ax) * wall.dx + (y - wall.ay) * wall.dy) / (wall.length * wall.length))) : 0;
+    if (Math.hypot(x - wall.ax - along * wall.dx, y - wall.ay - along * wall.dy) < R) return false;
+    sweepCircleSegment(x, y, dx, dy, R, wall, 1, hit);
+    if (hit.time <= 1) return false;
+  }
+  for (const bumper of world.bumpers) {
+    if (Math.hypot(x - bumper.x, y - bumper.y) < R + bumper.radius) return false;
+    circleSweep(x, y, dx, dy, bumper.x, bumper.y, R + bumper.radius, 1, hit);
+    if (hit.time <= 1) return false;
+  }
+  return !world.hazards.some(polygon => polygonEntry(x, y, dx, dy, polygon) <= 1);
 }
 
 export function launch(world, angle, power) {
@@ -217,11 +284,24 @@ export function findCollision(world, x, y, vx, vy, maxTime, out, moving = false,
   return out;
 }
 
+export function sweptPolygonEntry(x, y, dx, dy, polygon, radius = R) {
+  let earliest = polygonEntry(x, y, dx, dy, polygon);
+  const hit = collisionResult();
+  for (let i = 0; i < polygon.length; i++) {
+    const edge = compileWall({ a: polygon[i], b: polygon[(i + 1) % polygon.length], mat: 'solid' });
+    const along = edge.length ? Math.max(0, Math.min(1, ((x-edge.ax)*edge.dx+(y-edge.ay)*edge.dy)/(edge.length*edge.length))) : 0;
+    if (Math.hypot(x-edge.ax-along*edge.dx,y-edge.ay-along*edge.dy) <= radius) return 0;
+    sweepCircleSegment(x,y,dx,dy,radius,edge,1,hit);
+    earliest = Math.min(earliest,hit.time);
+  }
+  return earliest;
+}
+
 function moveThroughRegions(world, dx, dy) {
   let time = polygonEntry(world.x, world.y, dx, dy, world.goal);
   let hazard = false;
   for (let i = 0; i < world.hazards.length; i++) {
-    const entry = polygonEntry(world.x, world.y, dx, dy, world.hazards[i]);
+    const entry = sweptPolygonEntry(world.x, world.y, dx, dy, world.hazards[i]);
     if (entry < time) { time = entry; hazard = true; }
   }
   if (time <= 1) {
@@ -249,12 +329,38 @@ function moveThroughRegions(world, dx, dy) {
 }
 
 export function stepWorld(world, dt = P.step) {
+  if (!Number.isFinite(dt) || dt <= 0) return;
+  // Public callers (practice, replays, tests) use the same maximum integration
+  // interval as the campaign's fixed-step accumulator.
+  if (dt > P.step + P.epsilon) {
+    const x = world.x, y = world.y, angle = world.angle, teleports = world.teleports;
+    let remaining = dt;
+    while (remaining > P.epsilon) {
+      const slice = Math.min(remaining, P.step);
+      stepWorld(world, slice);
+      remaining -= slice;
+    }
+    if (world.teleports === teleports && world.lastOutcome !== 'hazard') { world.px = x; world.py = y; }
+    world.previousAngle = angle;
+    return;
+  }
   world.px = world.x;
+  world.stepDuration = dt;
   world.py = world.y;
   world.previousAngle = world.angle;
   world.time += dt;
   for (const pair of world.portals) pair.cooldown = Math.max(0, pair.cooldown - dt);
-  if (world.status !== 'moving') { updateMovingWalls(world); return; }
+  updatePortals(world);
+  if (world.status !== 'moving') {
+    updateMovingWalls(world, world.time - dt);
+    if (world.status !== 'ready') { updateMovingWalls(world); return; }
+    const portal = portalCollision(world, world.x, world.y, 0, 0, dt);
+    const contact = findCollision(world, world.x, world.y, 0, 0, dt, world.collision, true);
+    if (!Number.isFinite(portal.time) && !Number.isFinite(contact.time)) { updateMovingWalls(world); return; }
+    world.status = 'moving';
+    world.startX = world.x; world.startY = world.y;
+    world.shotTime = 0;
+  }
   updateMovingWalls(world, world.time - dt);
   world.shotTime += dt;
   const damping = Math.exp(-P.damping * dt);
@@ -265,8 +371,9 @@ export function stepWorld(world, dt = P.step) {
     const dy = well.y - world.y;
     const distance = Math.hypot(dx, dy);
     if (distance < well.radius && distance > 0) {
-      const factor = distance < R ? (distance / R) * (1 - R / well.radius) : (1 - distance / well.radius);
-      const acceleration = well.strength * factor / distance;
+      const falloff = 1 - distance / well.radius;
+      const softened = well.strength * falloff * distance / Math.hypot(distance, P.gravityWells.softening);
+      const acceleration = Math.min(softened, P.gravityWells.maxAcceleration) / distance;
       world.vx += acceleration * dx * dt;
       world.vy += acceleration * dy * dt;
     }
@@ -281,24 +388,39 @@ export function stepWorld(world, dt = P.step) {
   let count = 0;
   while (remaining > P.epsilon && count < P.maxCollisions) {
     const hit = findCollision(world, world.x, world.y, world.vx, world.vy, remaining, world.collision, true, dt - remaining);
-    const portal = portalCollision(world, world.x, world.y, world.vx, world.vy, remaining);
+    const portal = portalCollision(world, world.x, world.y, world.vx, world.vy, remaining, null, dt - remaining);
     const travel = Math.min(remaining, hit.time, portal.time);
     if (moveThroughRegions(world, world.vx * travel, world.vy * travel)) { updateMovingWalls(world); return; }
     remaining -= travel;
     if (portal.time <= hit.time && portal.time <= travel) {
-      const exit = portalExit(portal, world.vx, world.vy);
+      const exit = portal.destination;
       Object.assign(world, { x: exit.x, y: exit.y, px: exit.x, py: exit.y, vx: exit.vx, vy: exit.vy });
-      portal.pair.cooldown = 0.15;
+      portal.pair.cooldown = P.portals.cooldown;
+      portal.pair.hitAt = world.time;
       world.teleports++;
       count++;
       continue;
     }
     if (!hit.kind) break;
+    if (hit.kind === 'wall' && world.walls[hit.wall].mat !== 'glass') {
+      let nx = hit.nx, ny = hit.ny, contacts = 1;
+      for (let i = 0; i < world.walls.length; i++) {
+        const wall = world.walls[i];
+        if (i === hit.wall || !wall.active || wall.mat === 'glass') continue;
+        const other = collisionResult();
+        sweepCircleSegment(world.x, world.y, world.vx, world.vy, R, wall, P.epsilon, other);
+        if (other.time <= P.epsilon && other.nx * hit.nx + other.ny * hit.ny < 0.999) {
+          nx += other.nx; ny += other.ny; contacts++; wall.hitAt = world.time;
+        }
+      }
+      const magnitude = Math.hypot(nx, ny);
+      if (contacts > 1 && magnitude > P.epsilon) { hit.nx = nx / magnitude; hit.ny = ny / magnitude; world.impacts += contacts - 1; }
+    }
     if (hit.kind === 'bumper') {
       const bumper = world.bumpers[hit.index];
       const dot = world.vx * hit.nx + world.vy * hit.ny;
-      world.vx = (world.vx - 2 * dot * hit.nx) * bumper.restitution;
-      world.vy = (world.vy - 2 * dot * hit.ny) * bumper.restitution;
+      world.vx -= (1 + bumper.restitution) * dot * hit.nx;
+      world.vy -= (1 + bumper.restitution) * dot * hit.ny;
       const speed = Math.hypot(world.vx, world.vy);
       if (speed > P.maxSpeed) { world.vx *= P.maxSpeed / speed; world.vy *= P.maxSpeed / speed; }
       world.x += hit.nx * P.separation;
@@ -330,12 +452,40 @@ export function stepWorld(world, dt = P.step) {
     count++;
   }
   updateMovingWalls(world);
+  resolvePenetration(world);
   // If an adversarial corner exhausts the cap, discard remaining time, never tunnel.
   if (Math.hypot(world.vx, world.vy) < P.stopSpeed || world.shotTime >= P.shotLimit) {
     world.vx = 0;
     world.vy = 0;
     world.status = 'ready';
     world.lastOutcome = 'rest';
+  }
+}
+
+function resolvePenetration(world) {
+  // Project out of overlapping capsules, including kinematic contacts. The
+  // generator reserves complete swept envelopes, so this handles adversarial
+  // imported/editor geometry without repeated zero-time impact energy loss.
+  for (let pass = 0; pass < 8; pass++) {
+    let changed = false;
+    for (const wall of [...world.walls, ...world.movingWalls]) {
+      if (!wall.active) continue;
+      const t = wall.length ? Math.max(0,Math.min(1,((world.x-wall.ax)*wall.dx+(world.y-wall.ay)*wall.dy)/(wall.length*wall.length))) : 0;
+      let dx = world.x-wall.ax-wall.dx*t, dy = world.y-wall.ay-wall.dy*t;
+      const distance = Math.hypot(dx,dy);
+      if (distance >= R-P.epsilon) continue;
+      if (distance < P.epsilon) { dx=wall.nx;dy=wall.ny; } else { dx/=distance;dy/=distance; }
+      const correction=R-distance+P.separation;
+      world.x+=dx*correction;world.y+=dy*correction;changed=true;
+    }
+    if (!changed) return;
+  }
+  // A moving wall may form a physically impossible pinch. Keep the puck at its
+  // last safe position and clamp that wall for this step instead of tunneling.
+  world.x=world.px;world.y=world.py;world.vx=0;world.vy=0;
+  for(const wall of world.movingWalls) {
+    wall.ax-=wall.vx*P.step;wall.bx-=wall.vx*P.step;
+    wall.ay-=wall.vy*P.step;wall.by-=wall.vy*P.step;
   }
 }
 
@@ -347,8 +497,45 @@ export function getAim(world, angle, out = world.preview) {
   return out;
 }
 
-export function getAimTrajectory(world, angle, maxLength = CONFIG.input.previewLength) {
+export function getAimTrajectory(world, angle, maxLength = CONFIG.input.previewLength, power = CONFIG.input.defaultPower) {
+  if (world.gravityWells.length || world.movingWalls.length || world.portals.some(pair => pair.A.motion || pair.B.motion)) return simulateAim(world, angle, maxLength, power);
   return traceAim(world, angle, maxLength, 0);
+}
+
+function simulateAim(world, angle, maxLength, power) {
+  const preview = {
+    ...world, status: 'ready', shots: 0, budget: Infinity,
+    walls: world.walls.map(wall => ({ ...wall })),
+    movingWalls: world.movingWalls.map(wall => ({ ...wall })),
+    bumpers: world.bumpers.map(bumper => ({ ...bumper })),
+    portals: world.portals.map(pair => ({ ...pair, A: { ...pair.A }, B: { ...pair.B } })),
+    collision: collisionResult(), preview: collisionResult(),
+  };
+  const length = Number.isFinite(maxLength) ? Math.max(0, maxLength) : CONFIG.input.previewLength;
+  const segments = [];
+  let x = world.x, y = world.y, travelled = 0, steps = 0;
+  launch(preview, angle, power);
+  while (preview.status === 'moving' && travelled < length && steps < CONFIG.tests.maxSteps) {
+    const beforeX = preview.x, beforeY = preview.y, teleports = preview.teleports, impacts = preview.impacts;
+    stepWorld(preview);
+    steps++;
+    if (preview.lastOutcome === 'hazard') break;
+    if (preview.teleports !== teleports) {
+      segments.push({ x0: x, y0: y, x1: beforeX, y1: beforeY });
+      x = preview.px; y = preview.py;
+      travelled += Math.hypot(preview.x - x, preview.y - y);
+    } else travelled += Math.hypot(preview.x - beforeX, preview.y - beforeY);
+    if (steps % 6 === 0 || preview.impacts !== impacts || preview.status !== 'moving' || travelled >= length) {
+      segments.push({ x0: x, y0: y, x1: preview.x, y1: preview.y });
+      x = preview.x; y = preview.y;
+    }
+  }
+  if (preview.lastOutcome !== 'hazard' && (x !== preview.x || y !== preview.y)) segments.push({ x0: x, y0: y, x1: preview.x, y1: preview.y });
+  const last = segments.at(-1) ?? { x0: x, y0: y, x1: x, y1: y };
+  if (!segments.length) segments.push(last);
+  return { x0: world.x, y0: world.y, x1: last.x1, y1: last.y1, x2: last.x1, y2: last.y1,
+    hasBounce: preview.impacts > world.impacts, hasPortal: preview.teleports > world.teleports,
+    hasGravity: true, normal: { x: 0, y: 0 }, segments, steps };
 }
 
 function traceAim(world, angle, maxLength, depth, excluded = null) {
@@ -360,7 +547,7 @@ function traceAim(world, angle, maxLength, depth, excluded = null) {
   if (portal.time < hit.time && portal.time <= length) {
     const x1 = world.x + dx * portal.time;
     const y1 = world.y + dy * portal.time;
-    const exit = portalExit(portal, dx, dy);
+    const exit = portal.destination;
     const next = traceAim({ ...world, x: exit.x, y: exit.y, preview: collisionResult() }, Math.atan2(exit.vy, exit.vx), length - portal.time, depth + 1, portal.pair);
     return { x0: world.x, y0: world.y, x1, y1, x2: next.x2, y2: next.y2, hasBounce: next.hasBounce, hasPortal: true, normal: next.normal, segments: [{ x0: world.x, y0: world.y, x1, y1 }, ...next.segments] };
   }
@@ -371,8 +558,12 @@ function traceAim(world, angle, maxLength, depth, excluded = null) {
   const dot = dx * hit.nx + dy * hit.ny;
   const normal = { x: hit.nx, y: hit.ny };
   const remaining = hasBounce ? length - distance : 0;
-  const reflectedX = dx - 2 * dot * normal.x;
-  const reflectedY = dy - 2 * dot * normal.y;
+  const restitution = hit.kind === 'bumper' ? world.bumpers[hit.index].restitution : 1;
+  const outgoingX = dx - (1 + restitution) * dot * normal.x;
+  const outgoingY = dy - (1 + restitution) * dot * normal.y;
+  const outgoingLength = Math.hypot(outgoingX, outgoingY) || 1;
+  const reflectedX = outgoingX / outgoingLength;
+  const reflectedY = outgoingY / outgoingLength;
   const startX = x1 + (hasBounce ? normal.x * P.separation : 0);
   const startY = y1 + (hasBounce ? normal.y * P.separation : 0);
   const hit2 = collisionResult();
@@ -384,7 +575,7 @@ function traceAim(world, angle, maxLength, depth, excluded = null) {
   if (secondPortal.time <= secondLength) {
     const entryX = startX + reflectedX * secondPortal.time;
     const entryY = startY + reflectedY * secondPortal.time;
-    const exit = portalExit(secondPortal, reflectedX, reflectedY);
+    const exit = secondPortal.destination;
     const next = traceAim({ ...world, x: exit.x, y: exit.y, preview: collisionResult() }, Math.atan2(exit.vy, exit.vx), remaining - secondPortal.time, depth + 1, secondPortal.pair);
     return { x0: world.x, y0: world.y, x1, y1, x2: next.x2, y2: next.y2, hasBounce, hasPortal: true, normal, segments: [{ x0: world.x, y0: world.y, x1, y1 }, { x0: startX, y0: startY, x1: entryX, y1: entryY }, ...next.segments] };
   }

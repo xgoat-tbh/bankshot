@@ -3,7 +3,16 @@ import assert from 'node:assert/strict';
 import * as physics from '../src/physics.js';
 import { CONFIG } from '../src/config.js';
 import { Renderer } from '../src/render.js';
+import { aimPreviewLength } from '../src/render.js';
 import { generateRoom } from '../src/generator.js';
+
+test('keyboard rotation shows only a needle; charging grows the full trajectory', () => {
+  assert.equal(aimPreviewLength({lastInput:'keyboard',charging:false,power:1},2000),50);
+  assert.equal(aimPreviewLength({lastInput:'keyboard',charging:true,power:0},2000),0);
+  assert.equal(aimPreviewLength({lastInput:'keyboard',charging:true,power:.25},2000),500);
+  assert.equal(aimPreviewLength({lastInput:'keyboard',charging:true,power:1},2000),2000);
+  assert.equal(aimPreviewLength({lastInput:'touch',dragging:true,power:.25},2000),2000);
+});
 
 test('renderer draws v3 vectors, bounded streak embers, portal guides and density settings', () => {
   const gradient = { addColorStop() {} };
@@ -87,4 +96,45 @@ test('reflected trajectory terminates at the next swept wall and retains first n
   const aim = physics.getAimTrajectory(world, Math.PI / 4, 500);
   assert.ok(Math.abs(aim.y2 - 236) < 1e-8);
   assert.deepEqual(aim.normal, { x: -1, y: 0 });
+});
+
+test('gravity preview follows the launched trajectory without mutating live physics', () => {
+  const world = physics.createWorld({ puck: [100, 100], walls: [], goal: [], hazards: [], gravityWells: [{ x: 180, y: 170, radius: 200, strength: 1800 }] });
+  const before = JSON.stringify(world);
+  const preview = physics.getAimTrajectory(world, 0, 400, 0.25);
+  assert.equal(preview.hasGravity, true);
+  assert.ok(preview.segments.length > 2);
+  assert.ok(preview.segments[3].y1 > 100);
+  assert.equal(JSON.stringify(world), before);
+  const replay = physics.createWorld(world.level);
+  physics.launch(replay, 0, 0.25);
+  for (let i = 0; i < preview.steps; i++) physics.stepWorld(replay);
+  assert.ok(Math.hypot(preview.x2 - replay.x, preview.y2 - replay.y) < 1e-7);
+  const weaker = physics.getAimTrajectory(world, 0, 400, 0.1);
+  assert.notDeepEqual(weaker.segments, preview.segments);
+});
+
+test('pointer coordinates refresh after canvas scrolling without a resize', () => {
+  const renderer = { canvas: { getBoundingClientRect: () => ({ left: 25, top: 70 }) }, left: 0, top: 0, x: 10, y: 20, scale: 2, pointerPoint: {} };
+  assert.deepEqual(Renderer.prototype.toWorld.call(renderer, 75, 130), { x: 20, y: 20 });
+});
+
+test('portal preview retains the pull-back indicator while dragging', () => {
+  const world = physics.createWorld({ puck: [100, 100], walls: [], goal: [], hazards: [], portals: [{ A: { x: 160, y: 100, nx: -1, ny: 0, radius: 20 }, B: { x: 600, y: 300, nx: 0, ny: 1, radius: 20 } }] });
+  const lines = [];
+  const context = new Proxy({ lineTo: (x, y) => lines.push([x, y]) }, { get: (target, key) => key in target ? target[key] : () => {} });
+  Renderer.prototype.drawAim.call({}, context, world, 0, true, 1);
+  assert.ok(lines.some(([x, y]) => x < world.x && y === world.y));
+});
+
+test('oblique bumper preview matches normal-only restitution in the live shot', () => {
+  const world = physics.createWorld({ puck: [126, 400], walls: [], goal: [], hazards: [], bumpers: [{ x: 160, y: 400, radius: 20, restitution: 1.25 }] });
+  const preview = physics.getAimTrajectory(world, Math.PI / 6, 500, 0.5);
+  physics.launch(world, Math.PI / 6, 0.5);
+  physics.stepWorld(world);
+  const ray = preview.segments[1];
+  const predicted = Math.atan2(ray.y1 - ray.y0, ray.x1 - ray.x0);
+  const actual = Math.atan2(world.vy, world.vx);
+  assert.ok(Math.abs(predicted - actual) < 1e-8, `${predicted} != ${actual}`);
+  assert.ok(Math.abs(Math.hypot(ray.x1 - ray.x0, ray.y1 - ray.y0) - 500) < 1e-7);
 });

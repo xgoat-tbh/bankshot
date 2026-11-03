@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+data/profiles.json*
 
 # Production build output
 dist/
@@ -13,3 +14,7 @@ tests/artifacts/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Agent workspaces & scratch directories
+.agents/
+scratch/

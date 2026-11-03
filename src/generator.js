@@ -1,137 +1,229 @@
 import { CONFIG } from './config.js';
 import { simulateSolution } from './physics.js';
+import { ClearanceEngine, validateClearance } from './clearance.js';
+import { LEVELS, MILESTONES } from './levels.js';
 
-const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
 const wall = (a, b, mat = 'solid') => ({ a, b, mat });
 
-// Hash strings rather than coercing seeds to numbers: persisted UUID seeds work too.
 function randomFor(seed, index) {
   let state = 2166136261;
-  for (const character of `${seed}:${index}`) state = Math.imul(state ^ character.charCodeAt(0), 16777619);
+  for (const c of `${seed}:${index}`) state = Math.imul(state ^ c.charCodeAt(0), 16777619) >>> 0;
   return () => {
-    state += 0x6D2B79F5;
-    let value = Math.imul(state ^ state >>> 15, 1 | state);
-    value ^= value + Math.imul(value ^ value >>> 7, 61 | value);
-    return ((value ^ value >>> 14) >>> 0) / 4294967296;
+    state = (state + 0x6D2B79F5) >>> 0;
+    let n = Math.imul(state ^ state >>> 15, 1 | state);
+    n ^= n + Math.imul(n ^ n >>> 7, 61 | n);
+    return ((n ^ n >>> 14) >>> 0) / 4294967296;
   };
 }
 
-function material(n, random) {
-  const value = random();
-  if (n < 10) return 'solid';
-  if (n < 20) return value < 0.75 ? 'solid' : 'rubber';
-  if (n <= 30) return value < 0.6 ? 'solid' : value < 0.8 ? 'rubber' : 'glass';
-  return value < 0.5 ? 'solid' : value < 0.75 ? 'rubber' : 'glass';
+const milestoneNames = { 25: 'Kinetic Gate', 50: 'Gravity Crucible', 75: 'Orbital Convergence', 100: 'Event Horizon' };
+
+function pointSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, q = dx * dx + dy * dy;
+  const t = q ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / q)) : 0;
+  return Math.hypot(px - ax - t * dx, py - ay - t * dy);
 }
 
 function candidate(index, seed, fallback = false) {
-  const n = index;
-  const random = randomFor(seed, fallback ? 0 : index);
-  const count = clamp(2 + Math.floor(n / 5), 2, 8);
-  const w = clamp(48 - Math.floor(n / 10) * 2, 32, 48);
-  const px = 190 + random() * 90;
-  const py = 390 + random() * 70;
-  const gx = 880 + random() * 100;
-  const gy = 380 + random() * 80;
-  const h = CONFIG.world.goalHalfHeight;
-  const c = CONFIG.world.goalCut;
-  const mirrorX = random() < 0.5;
-  const mirrorY = random() < 0.5;
-  const transform = ([x, y]) => [mirrorX ? 1200 - x : x, mirrorY ? 800 - y : y];
-  const interior = [wall([520 + random() * 70, 310], [520, 550])];
-  // The direct-shot barrier is cardinal; reserve the upper bank corridor.
-  interior[0].b[0] = interior[0].a[0];
-  for (let i = 1; i < count; i++) {
-    const x = 170 + random() * 790;
-    const y = 590 + random() * 40;
-    const length = 35 + random() * 45;
-    const orientation = Math.floor(random() * 4);
-    interior.push(wall([x, y], [x + (orientation === 1 ? 0 : length), y + (orientation === 0 ? 0 : orientation === 3 ? -length : length)]));
+  const random = randomFor(seed, index);
+  const tier = Math.min(100, index);
+  const archetype = fallback ? 0 : (index + Math.floor(random() * 4)) % 4;
+
+  let px, py, gx, gy, bankY, reflectedY;
+  const w = Math.max(32, 48 - Math.floor(tier / 10) * 2), h = 46, c = 14;
+
+  if (archetype === 0) {
+    px = 210 + random() * 60; py = 640 + random() * 40;
+    gx = 1340 + random() * 50; gy = 210 + random() * 30;
+    bankY = 70 + CONFIG.world.radius;
+    reflectedY = bankY - (gy - bankY) / CONFIG.physics.restitution.solid;
+  } else if (archetype === 1) {
+    px = 1350 - random() * 60; py = 640 + random() * 40;
+    gx = 240 - random() * 50; gy = 210 + random() * 30;
+    bankY = 70 + CONFIG.world.radius;
+    reflectedY = bankY - (gy - bankY) / CONFIG.physics.restitution.solid;
+  } else if (archetype === 2) {
+    px = 210 + random() * 60; py = 220 + random() * 40;
+    gx = 1340 + random() * 50; gy = 650 + random() * 30;
+    bankY = 830 - CONFIG.world.radius;
+    reflectedY = bankY + (bankY - gy) / CONFIG.physics.restitution.solid;
+  } else {
+    px = 1350 - random() * 60; py = 220 + random() * 40;
+    gx = 240 - random() * 50; gy = 650 + random() * 30;
+    bankY = 830 - CONFIG.world.radius;
+    reflectedY = bankY + (bankY - gy) / CONFIG.physics.restitution.solid;
   }
-  if (n > 20) {
-    // A gate closes the original bank approach. Move beneath its tip first;
-    // later rooms add a perpendicular positioning shot before the bank.
-    interior[1] = wall([px + 100, 100], [px + 100, py - 40]);
-    interior[0].a[1] = Math.min(py, gy) - 25;
+
+  const puck = [px, py];
+  const goal = [[gx - w + c, gy - h], [gx + w, gy - h], [gx + w, gy + h - c], [gx + w - c, gy + h], [gx - w, gy + h], [gx - w, gy - h + c]];
+
+  const par = Math.min(5, 1 + Math.floor((tier - 1) / 20));
+  const prepDir = px < 800 ? 0 : 180;
+  const preparation = Array.from({ length: par - 1 }, (_, step) => ({
+    angleDeg: step % 2 ? (prepDir === 0 ? 180 : 0) : prepDir,
+    power: 0.025,
+  }));
+
+  let curX = px, curY = py;
+  if (preparation.length) {
+    const replay = simulateSolution({ puck, goal: [], walls: [], hazards: [], solution: preparation });
+    curX = replay.x; curY = replay.y;
   }
-  for (const item of interior) {
-    item.mat = material(n, random);
-    item.a = transform(item.a);
-    item.b = transform(item.b);
-  }
-  const boundary = CONFIG.world.boundary.map((point, i, points) => wall([...point], [...points[(i + 1) % points.length]]));
-  const hazards = [];
-  if (n >= 30) {
-    const hazardCount = 1 + Math.floor(random() * 2);
-    for (let i = 0; i < hazardCount; i++) {
-      const x = 320 + i * 340 + random() * 60;
-      hazards.push([[x, 510], [x + 100, 510], [x + 100, 555], [x, 555]].map(transform));
+
+  const angleDeg = Math.atan2(reflectedY - curY, gx - curX) * 180 / Math.PI;
+
+  const tBank = (bankY - curY) / (reflectedY - curY);
+  const hitX = curX + tBank * (gx - curX);
+  const inCorridor = (x, y, r = 60) =>
+    pointSegment(x, y, curX, curY, hitX, bankY) < (r + 45) ||
+    pointSegment(x, y, hitX, bankY, gx, gy) < (r + 45);
+
+  const boundary = CONFIG.world.boundary.map((p, i, points) => wall([...p], [...points[(i + 1) % points.length]]));
+  const engine = new ClearanceEngine();
+  for (const b of boundary) engine.add('wall', b, true);
+  engine.add('spawn', puck, true);
+  engine.add('goal', goal, true);
+
+  const movingWalls = [], bumpers = [], portals = [], gravityWells = [], hazards = [];
+  const walls = [...boundary];
+
+  const add = (type, item, list) => {
+    if (engine.add(type, item)) { list.push(item); return true; }
+    return false;
+  };
+
+  if (index >= 31) {
+    const motionType = 'linear';
+    const amplitude = [0, index <= 50 ? 25 : index <= 70 ? 30 : 35];
+    const frequency = (index <= 50 ? 2 : index <= 70 ? 3.8 : 5.2) / (Math.PI * 2);
+
+    const pY1 = archetype < 2 ? 280 : 600;
+    const pY2 = archetype < 2 ? 580 : 280;
+    const pA = { x: px < 800 ? 240 : 1360, y: pY1, nx: px < 800 ? 1 : -1, ny: 0, radius: 24, motion: { type: motionType, amplitude, frequency, phase: 0, ratio: 2 } };
+    const pB = { x: px < 800 ? 1360 : 240, y: pY2, nx: px < 800 ? -1 : 1, ny: 0, radius: 24, motion: { type: motionType, amplitude, frequency, phase: Math.PI, ratio: 2 } };
+    if (!inCorridor(pA.x, pA.y, 40) && !inCorridor(pB.x, pB.y, 40) && engine.add('portal', pA) && engine.add('portal', pB)) {
+      portals.push({ id: `gate-${index}`, A: pA, B: pB });
     }
   }
-  // Unfold the top boundary at the puck center's collision line, not the wall.
-  const collisionY = 60 + CONFIG.world.radius;
-  const preparation = [];
-  if (n > 20) preparation.push({ angleDeg: mirrorX ? 180 : 0, power: 0.07 });
-  if (n > 40) preparation.push({ angleDeg: mirrorY ? 90 : -90, power: 0.035 });
-  const position = preparation.length ? simulateSolution({ puck: transform([px, py]), walls: boundary.concat(interior), goal: [], hazards, solution: preparation }) : null;
-  const startX = position ? (mirrorX ? 1200 - position.x : position.x) : px;
-  const startY = position ? (mirrorY ? 800 - position.y : position.y) : py;
-  const reflectedY = collisionY - (gy - collisionY) / CONFIG.physics.restitution.solid;
-  let dx = gx - startX;
-  let dy = reflectedY - startY;
-  if (mirrorX) dx = -dx;
-  if (mirrorY) dy = -dy;
-  const vector = ([x, y]) => [mirrorX ? -x : x, mirrorY ? -y : y];
-  const portal = (x, y, nx, ny) => {
-    const [tx, ty] = transform([x, y]);
-    const [tnx, tny] = vector([nx, ny]);
-    return { x: tx, y: ty, nx: tnx, ny: tny, radius: 24 };
-  };
-  const movingWalls = n >= 15 ? [{ a: transform([430, 660]), b: transform([530, 660]), delta: vector([35, 0]), freq: 0.8 + random() * 0.5, phase: random() * Math.PI * 2, mat: 'solid', active: true }] : [];
-  const [bumperX, bumperY] = transform([790 + random() * 35, 660]);
-  const bumpers = n >= 25 ? [{ x: bumperX, y: bumperY, radius: 25, restitution: 1.25 }] : [];
-  const portals = n >= 35 ? [{ id: `gate-${n}`, A: portal(140, 650, 1, 0), B: portal(1020, 570, -1, 0), cooldown: 0 }] : [];
-  const [wellX, wellY] = transform([650, 480]);
-  const gravityWells = n >= 50 ? [{ x: wellX, y: wellY, radius: 100, strength: 1800 }] : [];
+
+  if (index >= 50) {
+    const wellCandidates = [
+      { x: 800 + (random() - 0.5) * 400, y: archetype < 2 ? 550 : 330, radius: 95, strength: 1600 + random() * 400 },
+      { x: px < 800 ? 1100 : 500, y: archetype < 2 ? 500 : 380, radius: 90, strength: 1800 },
+      { x: 800, y: archetype < 2 ? 600 : 280, radius: 90, strength: 1800 },
+    ];
+    for (const cand of wellCandidates) {
+      if (!inCorridor(cand.x, cand.y, cand.radius) && add('well', cand, gravityWells)) break;
+    }
+  }
+
+  if (index >= 25) {
+    const bumperCandidates = [
+      { x: px < 800 ? 460 + random() * 80 : 1140 - random() * 80, y: archetype < 2 ? 460 : 420, radius: 25, restitution: 1.25 },
+      { x: 800 + (random() - 0.5) * 200, y: archetype < 2 ? 650 : 250, radius: 25, restitution: 1.25 },
+    ];
+    for (const cand of bumperCandidates) {
+      if (!inCorridor(cand.x, cand.y, 35) && add('bumper', cand, bumpers)) break;
+    }
+  }
+
+  if (index >= 15) {
+    const mx = 650 + (random() - 0.5) * 200;
+    const my = archetype < 2 ? 680 : 220;
+    const mw = { a: [mx - 40, my], b: [mx + 40, my], delta: [30, 0], freq: 1, phase: 0, mat: 'solid', active: true };
+    if (!inCorridor(mx, my, 50)) add('moving', mw, movingWalls);
+  }
+
+  if (index >= 30) {
+    const yList = archetype < 2 ? [680, 720, 600, 520, 440] : [200, 160, 320, 400, 480];
+    const xList = px < 800 ? [1160, 960, 760, 560, 360] : [360, 560, 760, 960, 1160];
+    outer: for (const hy of yList) {
+      for (const hx of xList) {
+        const hz = [[hx, hy], [hx + 80, hy], [hx + 80, hy + 40], [hx, hy + 40]];
+        if (!inCorridor(hx + 40, hy + 20, 50) && add('hazard', hz, hazards)) break outer;
+      }
+    }
+  }
+
+  const barX = (px + gx) / 2;
+  const barY = (py + gy) / 2;
+  const bar = wall([barX, barY - 50], [barX, barY + 50]);
+  if (!inCorridor(barX, barY, 40)) add('wall', bar, walls);
+
+  const target = Math.min(14, 2 + Math.floor(tier / 8));
+  const slots = [];
+  const yStart = archetype < 2 ? 500 : 180;
+  const yEnd = archetype < 2 ? 760 : 440;
+  for (let y = yStart; y <= yEnd; y += 80) {
+    for (let x = 360; x <= 1260; x += 100) slots.push([x, y]);
+  }
+  for (let i = slots.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [slots[i], slots[j]] = [slots[j], slots[i]];
+  }
+
+  for (const [x, y] of slots) {
+    if (walls.length - 8 >= target) break;
+    if (inCorridor(x + 15, y, 40)) continue;
+    const isSpecial = walls.length === 8 && index >= 20;
+    const mat = index < 10 ? 'solid' : (isSpecial || random() < 0.25) ? 'rubber' : (random() < 0.2 ? 'glass' : 'solid');
+    add('wall', wall([x, y], [x + 30, y], mat), walls);
+  }
+
   return {
-    id: n, name: `Bank ${n}`, puck: transform([px, py]),
-    goal: [[gx - w + c, gy - h], [gx + w, gy - h], [gx + w, gy + h - c], [gx + w - c, gy + h], [gx - w, gy + h], [gx - w, gy - h + c]].map(transform),
-    walls: boundary.concat(interior), hazards, par: preparation.length + 1,
-    solution: preparation.concat({ angleDeg: Math.atan2(dy, dx) * 180 / Math.PI, power: 0.7 }),
-    aimLength: clamp(2400 - n * 25, 450, 2400),
-    difficulty: Math.min(1, n / 50), generation: { fallback, attempts: 1 },
-    movingWalls, bumpers, portals, gravityWells,
+    id: index,
+    name: milestoneNames[index] ?? `${CONFIG.game.chapters[Math.min(9, Math.floor((tier - 1) / 10))]} ${index}`,
+    milestone: Boolean(milestoneNames[index]),
+    puck, goal, walls, hazards, movingWalls, bumpers, portals, gravityWells, par,
+    solution: preparation.concat({ angleDeg, power: 0.94 }),
+    aimLength: clamp(2400 - tier * 20, 450, 2400),
+    difficulty: Math.min(2.5, tier / 40),
+    generation: { fallback, attempts: 1 },
+    zones: { upper: [70, 320], middle: [320, 580], lower: [580, 830] },
   };
 }
 
-/** One-based room index; bounded deterministic work. Options exercise fallback. */
-export function generateRoom(levelIndex, userSeed, options = {}) {
-  if (!Number.isSafeInteger(levelIndex) || levelIndex < 1) throw new RangeError('Room index must be a positive safe integer');
+export function generateRoom(index, seed, options = {}) {
+  if (!Number.isSafeInteger(index) || index < 1) throw new RangeError('Room index must be a positive safe integer');
   const attempts = clamp(Math.floor(options.maxAttempts ?? 8), 0, 29);
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const room = candidate(levelIndex, `${userSeed}:${attempt}`);
+    const room = candidate(index, `${MILESTONES[index]?.seed ?? seed}:${attempt}`);
     room.generation.attempts = attempt + 1;
-    if (simulateSolution(room).status === 'won') return room;
+    if (!validateClearance(room).length && simulateSolution(room).status === 'won') return room;
   }
-  // Same reserved corridor and scaling, with fixed coordinates from a known seed.
-  // Physics verification still runs: no unchecked room can escape this function.
-  const room = candidate(levelIndex, 'bankshot-safe-corridor', true);
-  room.generation.attempts = attempts + 1;
-  if (simulateSolution(room).status !== 'won') throw new Error('Verified bank corridor violated physics assumptions');
+  for (let attempt = 0; attempt < 64; attempt++) {
+    const room = candidate(index, `bankshot-safe:${attempt}`, true);
+    room.generation.attempts = attempts + attempt + 1;
+    if (!validateClearance(room).length && simulateSolution(room).status === 'won') return room;
+  }
+  return createEmergencyRoom(index);
+}
+
+export function createEmergencyRoom(index) {
+  const room = candidate(index, 'bankshot-emergency', true);
+  room.walls = room.walls.slice(0, 8);
+  room.movingWalls = []; room.bumpers = []; room.portals = []; room.gravityWells = []; room.hazards = [];
+  room.generation.emergency = true;
+  const goalX = (Math.min(...room.goal.map(p => p[0])) + Math.max(...room.goal.map(p => p[0]))) / 2;
+  const goalY = (Math.min(...room.goal.map(p => p[1])) + Math.max(...room.goal.map(p => p[1]))) / 2;
+  room.solution = [{ angleDeg: Math.atan2(goalY - room.puck[1], goalX - room.puck[0]) * 180 / Math.PI, power: 0.65 }];
+  room.par = 1;
   return room;
 }
 
-/** LRU bounds memory independently of the player's highest unlocked room. */
-export function createRoomProvider(seed, capacity = 32) {
-  const rooms = new Map();
-  const limit = clamp(Math.floor(capacity) || 32, 1, 128);
-  const getRoom = (index) => {
-    const room = rooms.get(index) ?? generateRoom(index, seed);
-    rooms.delete(index);
-    rooms.set(index, room);
+function provider(seed, capacity, campaign) {
+  const rooms = new Map(), limit = clamp(Math.floor(capacity) || 32, 1, 128);
+  const getRoom = index => {
+    if (!Number.isSafeInteger(index) || index < 1) throw new RangeError('Room index must be a positive safe integer');
+    const room = rooms.get(index) ?? (campaign && index <= LEVELS.length ? LEVELS[index - 1] : generateRoom(index, seed));
+    rooms.delete(index); rooms.set(index, room);
     if (rooms.size > limit) rooms.delete(rooms.keys().next().value);
     return room;
   };
   getRoom.getRoom = getRoom;
   return getRoom;
 }
+
+export const createRoomProvider = (seed, capacity = 32) => provider(seed, capacity, false);
+export const createCampaignProvider = (seed, capacity = 32) => provider(seed, capacity, true);

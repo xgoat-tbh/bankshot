@@ -7,6 +7,11 @@ const W = CONFIG.world;
 const M = CONFIG.motion;
 const AIM_DASH = [5, 5];
 
+export function aimPreviewLength(input, maximum) {
+  if (input.lastInput !== 'keyboard') return maximum;
+  return input.charging ? maximum * Math.max(0, Math.min(1, input.power)) : 50;
+}
+
 function hexagon(ctx, radius) {
   ctx.beginPath();
   for (let i = 0; i < 6; i++) {
@@ -93,6 +98,7 @@ export class Renderer {
     this.lastGhostTime = -Infinity;
     this.wonAt = null;
     this.goalFlashed = false;
+    this.aimCache = null;
     this.tracing = !this.reducedMotion;
     this.goalX = 0;
     this.goalY = 0;
@@ -114,7 +120,11 @@ export class Renderer {
     this.canvas.height = Math.round(this.height * this.dpr);
     const L = CONFIG.layout;
     const unit = Math.max(L.unitMin, Math.min(L.unitMax, Math.min(this.width, this.height) * L.unitVmin / 100));
-    if (this.mode === 'title') {
+    if (this.mode === 'practice') {
+      this.scale = Math.max(CONFIG.physics.epsilon, Math.min(this.width / W.width, this.height / W.height));
+      this.x = (this.width - W.width * this.scale) / 2;
+      this.y = (this.height - W.height * this.scale) / 2;
+    } else if (this.mode === 'title') {
       const mobile = this.width / this.height < L.portraitRatio;
       this.scale = mobile
         ? Math.min(this.width / W.width, this.height / W.height) * V.mobileTitleZoom
@@ -140,7 +150,7 @@ export class Renderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, this.cache.width, this.cache.height);
     // Compensate for integer backing sizes so cached and dynamic geometry align.
-    ctx.setTransform(this.cache.width / W.width, 0, 0, this.cache.height / W.height, 0, 0);
+    ctx.setTransform(this.scale * this.dpr, 0, 0, this.scale * this.dpr, 0, 0);
     const world = this.world;
     for (let i = 0; i < world.hazards.length; i++) {
       const hazard = world.hazards[i];
@@ -174,6 +184,9 @@ export class Renderer {
   }
 
   toWorld(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.left = rect.left;
+    this.top = rect.top;
     this.pointerPoint.x = (clientX - this.left - this.x) / this.scale;
     this.pointerPoint.y = (clientY - this.top - this.y) / this.scale;
     return this.pointerPoint;
@@ -209,7 +222,7 @@ export class Renderer {
     ctx.globalAlpha = 1;
     ctx.fillStyle = C.ink;
     ctx.fillRect(0, 0, this.width, this.height);
-    ctx.drawImage(this.cache, this.x, this.y, W.width * this.scale, W.height * this.scale);
+    ctx.drawImage(this.cache, 0, 0, W.width * this.scale * this.dpr, W.height * this.scale * this.dpr, this.x, this.y, W.width * this.scale, W.height * this.scale);
     ctx.setTransform(this.scale * this.dpr, 0, 0, this.scale * this.dpr, this.x * this.dpr, this.y * this.dpr);
     if (this.tracing) {
       const stagger = Math.min(M.wallStaggerMs, (M.wallTotalMs - M.wallTraceMs) / Math.max(1, world.walls.length - 1));
@@ -228,8 +241,8 @@ export class Renderer {
     }
     ctx.globalAlpha = 1;
     this.drawElements(ctx, now);
+    if (!this.tracing) for (const wall of world.walls) drawWall(ctx, wall, 1, C.bone);
     this.drawGoal(ctx, now);
-    if (world.status === 'ready' && input.aiming && settings.aimPreview) this.drawAim(ctx, world, input.angle, input.dragging, world.level.id);
     const x = world.px + (world.x - world.px) * alpha;
     const y = world.py + (world.y - world.py) * alpha;
     const angle = this.reducedMotion ? 0 : world.previousAngle + (world.angle - world.previousAngle) * alpha;
@@ -246,6 +259,13 @@ export class Renderer {
       }
     } else this.ghosts.length = 0;
     this.drawPuck(ctx, x, y, angle, world.status === 'ready', input.angle, input.aiming && world.status === 'ready');
+    if (world.status === 'ready' && input.aiming && settings.aimPreview) {
+      if (input.lastInput === 'keyboard' && !input.charging) {
+        ctx.save(); ctx.strokeStyle = C.bone; ctx.lineWidth = 2; ctx.setLineDash([]);
+        segment(ctx, world.x, world.y, world.x + Math.cos(input.angle) * 50, world.y + Math.sin(input.angle) * 50);
+        ctx.restore();
+      } else this.drawAim(ctx, world, input.angle, input.dragging, world.level.id, input.power, input);
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -304,6 +324,15 @@ export class Renderer {
   drawElements(ctx, now) {
     const world = this.world;
     ctx.save();
+    this.drawGravityWells(ctx, now);
+    for (const hazard of world.hazards) {
+      ctx.globalAlpha = this.reducedMotion ? 0.65 : 0.55 + Math.sin(now * 2.5) * 0.15;
+      ctx.strokeStyle = C.accent;
+      ctx.shadowColor = C.accent;
+      ctx.shadowBlur = 8;
+      ctx.lineWidth = 2;
+      polygon(ctx, hazard); ctx.stroke();
+    }
     for (const wall of world.movingWalls) {
       if (!wall.active) continue;
       ctx.strokeStyle = C.movingWhite;
@@ -337,26 +366,53 @@ export class Renderer {
       }
       ctx.restore();
     }
-    for (const pair of world.portals) for (const portal of [pair.A, pair.B]) {
+    for (const pair of world.portals) for (const [index, portal] of [pair.A, pair.B].entries()) {
+      const inactive = pair.active === false;
+      const cooling = pair.cooldown > 0;
+      const flash = !inactive && !this.reducedMotion && world.time - pair.hitAt < 0.08;
+      const color = inactive ? C.grey : index ? C.portalBlue : C.portalCyan;
+      const pulse = this.reducedMotion || cooling || inactive ? 1 : 1 + Math.sin(now * 3.5) * 0.06;
       ctx.save();
       ctx.translate(portal.x, portal.y);
       ctx.rotate(Math.atan2(portal.ny, portal.nx));
-      ctx.strokeStyle = C.portalCyan;
-      ctx.fillStyle = C.portalCyan;
-      ctx.shadowColor = C.portalCyan;
-      ctx.shadowBlur = 10;
-      ctx.globalAlpha = 0.85;
+      ctx.strokeStyle = flash ? C.bone : color;
+      ctx.fillStyle = color;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = inactive ? 0 : flash ? 24 : cooling ? 4 : 12;
+      ctx.globalAlpha = inactive ? 0.35 : cooling && !flash ? 0.4 : 0.95;
       ctx.lineWidth = 2;
       for (const scale of [1, 0.72]) {
-        ctx.beginPath(); ctx.ellipse(0, 0, portal.radius * 0.4 * scale, portal.radius * scale, 0, 0, TAU); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, portal.radius * scale * pulse, 0, TAU); ctx.stroke();
       }
-      for (let i = 0; i < 8; i++) {
-        const angle = i * TAU / 8 + (this.reducedMotion ? 0 : now);
-        ctx.beginPath(); ctx.arc(Math.cos(angle) * portal.radius * 0.22, Math.sin(angle) * portal.radius * 0.6, 1.6, 0, TAU); ctx.fill();
+      // The chevron communicates the outgoing frame; the circular rim accepts
+      // incoming shots from every direction, matching the collision geometry.
+      segment(ctx, portal.radius + 6, -5, portal.radius + 12, 0);
+      segment(ctx, portal.radius + 12, 0, portal.radius + 6, 5);
+      if (!inactive && cooling) {
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath(); ctx.arc(0, 0, portal.radius + 5, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(1, pair.cooldown / CONFIG.physics.portals.cooldown)); ctx.stroke();
+      } else if (!inactive) for (let i = 0; i < 12; i++) {
+        const phase = (i / 12 + (this.reducedMotion ? 0 : now * 0.4)) % 1;
+        const angle = i * TAU / 12 + phase * TAU;
+        const radius = portal.radius * (0.2 + 0.65 * (1 - phase));
+        ctx.beginPath(); ctx.arc(Math.cos(angle) * radius, Math.sin(angle) * radius, 1.4, 0, TAU); ctx.fill();
       }
       ctx.restore();
     }
+    ctx.restore();
+  }
+
+  drawGravityWells(ctx, now) {
+    ctx.save();
+    const world = this.world;
     for (const well of world.gravityWells) {
+      const halo = ctx.createRadialGradient(well.x, well.y, 8, well.x, well.y, well.radius);
+      halo.addColorStop(0, 'rgba(213,0,249,0.22)');
+      halo.addColorStop(0.4, 'rgba(213,0,249,0.08)');
+      halo.addColorStop(1, 'rgba(213,0,249,0)');
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = halo;
+      ctx.fillRect(well.x - well.radius, well.y - well.radius, well.radius * 2, well.radius * 2);
       ctx.strokeStyle = C.gravityPurple;
       ctx.shadowColor = C.gravityPurple;
       ctx.shadowBlur = 4;
@@ -366,10 +422,13 @@ export class Renderer {
         ctx.beginPath(); ctx.arc(well.x, well.y, well.radius * ratio, 0, TAU); ctx.stroke();
       }
       ctx.globalAlpha = 0.7;
-      ctx.fillStyle = C.gravityPurple;
+      ctx.fillStyle = '#030408';
       ctx.beginPath();
-      ctx.arc(well.x, well.y, 4, 0, TAU);
+      ctx.arc(well.x, well.y, 12, 0, TAU);
       ctx.fill();
+      ctx.globalAlpha = 0.9;
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(well.x, well.y, 25, 10, -0.4, 0, TAU); ctx.stroke();
       ctx.globalAlpha = 0.65;
       for (let i = 0; i < 8; i++) {
         const angle = i * TAU / 8 + (this.reducedMotion ? 0 : now * 0.4);
@@ -436,43 +495,46 @@ export class Renderer {
     ctx.restore();
   }
 
-  drawAim(ctx, world, angle, dragging, levelIndex = 1) {
-    const length = Math.max(450, Math.min(2400, CONFIG.input.previewLength - levelIndex * 25));
-    const path = getAimTrajectory(world, angle, length);
+  drawAim(ctx, world, angle, dragging, levelIndex = 1, power = CONFIG.input.defaultPower, input = {}) {
+    const length = aimPreviewLength(input, Math.max(450, Math.min(2400, CONFIG.input.previewLength - levelIndex * 25)));
+    if (length <= 0) return;
+    const dynamic = world.movingWalls.length || world.portals.some(pair => pair.cooldown > 0 || pair.A.motion || pair.B.motion);
+    const key = [angle, power, length, world.x, world.y, world.version, dynamic ? Math.floor(world.time * 30) : 0].join(':');
+    if (this.aimCache?.world !== world || this.aimCache.key !== key) this.aimCache = { world, key, path: getAimTrajectory(world, angle, length, power) };
+    const path = this.aimCache.path;
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
     ctx.save();
-    if (path.hasPortal) {
+    if (path.hasPortal || path.hasGravity) {
       ctx.lineWidth = V.aimWidth;
       ctx.setLineDash(AIM_DASH);
       for (let i = 0; i < path.segments.length; i++) {
         const ray = path.segments[i];
-        ctx.strokeStyle = i ? C.portalCyan : C.bone;
-        ctx.globalAlpha = Math.max(0.15, 0.6 - i * 0.1);
+        ctx.strokeStyle = path.hasGravity ? C.bone : i ? C.portalBlue : C.bone;
+        ctx.globalAlpha = Math.max(0.18, 0.6 - i / path.segments.length * 0.4);
         segment(ctx, ray.x0, ray.y0, ray.x1, ray.y1);
       }
-      ctx.restore();
-      return;
-    }
-    const primary = ctx.createLinearGradient(path.x0, path.y0, path.x1, path.y1);
-    primary.addColorStop(0, 'rgba(233,230,223,0.65)');
-    primary.addColorStop(1, 'rgba(233,230,223,0.28)');
-    ctx.strokeStyle = primary;
-    ctx.lineWidth = V.aimWidth;
-    ctx.setLineDash(AIM_DASH);
-    segment(ctx, path.x0, path.y0, path.x1, path.y1);
-    if (path.hasBounce) {
-      const reflected = ctx.createLinearGradient(path.x1, path.y1, path.x2, path.y2);
-      reflected.addColorStop(0, 'rgba(255,107,61,0.5)');
-      reflected.addColorStop(1, 'rgba(255,107,61,0)');
-      ctx.strokeStyle = reflected;
-      segment(ctx, path.x1, path.y1, path.x2, path.y2);
-      ctx.setLineDash([]);
-      ctx.strokeStyle = C.accent;
-      ctx.globalAlpha = 0.5;
-      ctx.beginPath();
-      ctx.arc(path.x1, path.y1, 4, 0, TAU);
-      ctx.stroke();
+    } else {
+      const primary = ctx.createLinearGradient(path.x0, path.y0, path.x1, path.y1);
+      primary.addColorStop(0, 'rgba(233,230,223,0.65)');
+      primary.addColorStop(1, 'rgba(233,230,223,0.28)');
+      ctx.strokeStyle = primary;
+      ctx.lineWidth = V.aimWidth;
+      ctx.setLineDash(AIM_DASH);
+      segment(ctx, path.x0, path.y0, path.x1, path.y1);
+      if (path.hasBounce) {
+        const reflected = ctx.createLinearGradient(path.x1, path.y1, path.x2, path.y2);
+        reflected.addColorStop(0, 'rgba(255,107,61,0.5)');
+        reflected.addColorStop(1, 'rgba(255,107,61,0)');
+        ctx.strokeStyle = reflected;
+        segment(ctx, path.x1, path.y1, path.x2, path.y2);
+        ctx.setLineDash([]);
+        ctx.strokeStyle = C.accent;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.arc(path.x1, path.y1, 4, 0, TAU);
+        ctx.stroke();
+      }
     }
     if (dragging) {
       ctx.globalAlpha = V.puckRingOpacity;

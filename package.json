@@ -7,8 +7,13 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test tests/physics.test.mjs tests/generator.test.mjs tests/aim.test.mjs tests/state.test.mjs tests/input.test.mjs",
-    "test:browser": "node tests/browser.test.mjs"
+    "test": "node --test tests/physics.test.mjs tests/generator.test.mjs tests/aim.test.mjs tests/state.test.mjs tests/input.test.mjs tests/mechanics.test.mjs tests/network.test.mjs tests/profile.test.mjs",
+    "server": "node server/race-server.mjs",
+    "test:network": "node --test tests/network.test.mjs",
+    "test:race-browser": "node tests/network-browser.mjs",
+    "test:ui-browser": "node tests/ui-browser.test.mjs",
+    "test:browser": "node tests/browser.test.mjs",
+    "test:all": "npm test && npm run test:browser && npm run test:ui-browser && npm run test:race-browser"
   },
   "devDependencies": {
     "@types/node": "22.19.17",
@@ -16,5 +21,8 @@
     "typescript": "5.9.3",
     "vite": "7.3.2",
     "vite-plugin-singlefile": "2.3.0"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
   }
 }

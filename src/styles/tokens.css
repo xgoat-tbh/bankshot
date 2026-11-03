@@ -17,6 +17,12 @@
   --screen-time: 220ms;
   --goal-time: 2.4s;
   --target: 44px;
+  --btn-h-lg: 56px;
+  --btn-h-md: 44px;
+  --btn-size-icon: 44px;
+  --color-portal-a: #00E5FF;
+  --color-portal-b: #3B82F6;
+  --spacing-unit: 8px;
   --hud-moving-opacity: 0.3;
   --facet: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
   --facet-hover: polygon(calc(var(--cut) * 1.5) 0, 100% 0, 100% calc(100% - var(--cut) * 1.5), calc(100% - var(--cut) * 1.5) 100%, 0 100%, 0 calc(var(--cut) * 1.5));

@@ -1,16 +1,17 @@
-﻿> **v3 update:** See [current ranked rules, migration, mechanics, and settings](docs/bankshot-v3.md). The v3 implementation supersedes older rating examples below.
+> **v3 update:** See [current ranked rules, multiplayer race architecture, migration, mechanics, and settings](docs/bankshot-v3.md). The v3 implementation supersedes older rating examples below.
 
 <div align="center">
 
 # 🎱 BANKSHOT
 
-**A deterministic 2D precision bank-shot billiards physics puzzle game with endless procedural levels, 8-ball pool predictive reflection trajectories, and a Valorant-style competitive ranked progression system.**
+**A deterministic 2D precision bank-shot billiards physics puzzle game with endless procedural levels, real-time 8-player online race to level 100, 8-ball pool predictive reflection trajectories, and a Valorant-style competitive ranked progression system.**
 
 [![JavaScript](https://img.shields.io/badge/JavaScript-ES2022-F7DF1E?logo=javascript&logoColor=black&style=for-the-badge)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
 [![Canvas 2D](https://img.shields.io/badge/HTML5-Canvas_2D-E34F26?logo=html5&logoColor=white&style=for-the-badge)](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API)
 [![Physics](https://img.shields.io/badge/Physics-Fixed--Step_120Hz-FF6B3D?style=for-the-badge)](#-mathematics--physics-engine)
-[![Tests](https://img.shields.io/badge/Unit_Tests-47%20Passed-10B981?logo=node.js&logoColor=white&style=for-the-badge)](#-testing--quality-assurance)
-[![Playwright](https://img.shields.io/badge/E2E_Acceptance-79%20Passed-45ba4b?logo=playwright&logoColor=white&style=for-the-badge)](#-browser-acceptance-suite)
+[![Unit Tests](https://img.shields.io/badge/Unit_Tests-91%20Passed-10B981?logo=node.js&logoColor=white&style=for-the-badge)](#-testing--quality-assurance)
+[![Playwright](https://img.shields.io/badge/Browser_E2E-90%20Passed-45ba4b?logo=playwright&logoColor=white&style=for-the-badge)](#-browser-acceptance-suite)
+[![Multiplayer](https://img.shields.io/badge/Online_Race-8--Player_100_Rooms-blueviolet?style=for-the-badge)](#-multiplayer-online-race-to-level-100)
 [![Dependencies](https://img.shields.io/badge/Dependencies-Zero_Runtime-blue?style=for-the-badge)](#-zero-runtime-dependencies)
 [![License](https://img.shields.io/badge/License-MIT-A855F7?style=for-the-badge)](LICENSE)
 
@@ -31,9 +32,10 @@
 - [Overview](#-overview)
 - [Visual Showcase](#-visual-showcase)
 - [Core Gameplay & Features](#-core-gameplay--features)
+- [Multiplayer Online Race to Level 100](#-multiplayer-online-race-to-level-100)
 - [Valorant-Style Ranked System (ELO & RR)](#-valorant-style-ranked-system-elo--rr)
 - [Mathematics & Physics Engine](#-mathematics--physics-engine)
-- [Procedural Level Generation](#-procedural-level-generation)
+- [Procedural Level Generation & Spatial Clearance Engine](#-procedural-level-generation--spatial-clearance-engine)
 - [Adaptive Budget & Pity System](#-adaptive-budget--pity-system)
 - [Controls & Input Modes](#-controls--input-modes)
 - [Quick Start (Zero Build Required)](#-quick-start-zero-build-required)
@@ -48,16 +50,17 @@
 
 **Bankshot** is an arcade precision puzzle game designed around geometric bank shots, specular wall bounces, and spatial calculation. Built entirely with vanilla web technologies, the game pairs high-framerate 2D vector canvas rendering with a continuous swept-capsule collision physics engine and an endless procedural room generator that physically verifies every solution before presenting it to the player.
 
-Players compete through a tiered ranked ladder inspired by **Valorant**, earning **Rank Rating (RR)** and persistent **ELO** rating (`2 RR = 1 ELO`) across 25 distinct competitive tiers from **Iron I** to **Radiant**.
+Players compete through a tiered ranked ladder inspired by **Valorant**, earning **Rank Rating (RR)** and persistent **ELO** rating (`2 RR = 1 ELO`) across 25 distinct competitive tiers from **Iron I** to **Radiant**, or jump into real-time **Online Race Mode** to compete live against up to 8 players across 100 synchronized procedural rooms.
 
 ### Key Highlights
 * 🎯 **8-Ball Pool Predictive Trajectory**: Dotted projection line reveals the exact launch path and specular reflection normal before you release.
 * ⚡ **120 Hz Continuous Collision Physics**: Sub-step swept-circle continuous collision detection ensures no tunneling through thin walls even at 3,200 px/s.
-* 🌌 **Infinite Procedural Rooms**: Seed-driven level generation with a physical validation solver that guarantees 100% solvable puzzle geometry.
+* 🏎️ **Real-Time Online Race to Level 100**: Low-latency WebSocket multiplayer with authoritative server replay validation, 10-byte delta-compressed binary telemetry, and cubic Hermite ghost interpolation.
+* 🌌 **Infinite Procedural Rooms & Clearance Engine**: Seed-driven level generation with 4 dynamic geometric archetypes and an automated spatial clearance solver guaranteeing zero overlap and 100% solvable puzzle geometry.
 * 🏆 **Competitive Ranked Ladder**: Full 25-tier progression system (Iron, Bronze, Silver, Gold, Platinum, Diamond, Ascendant, Immortal, Radiant) with demotion shields and match history.
-* 🧠 **Adaptive Difficulty**: Rolling 10-attempt performance ratios adjust shot budgets dynamically, with mercy pity tries for struggling rooms.
+* 🛠️ **Interactive Vector Practice Sandbox**: In-guide placement tool allowing players to drop bumpers, gravity wells, portals, hazards, and walls directly onto a live practice canvas.
 * 📱 **Universal Cross-Platform Controls**: Seamless support for mouse slingshots, fine touch drag-and-release, and precision keyboard aiming (`Shift` for fine angular adjustments).
-* 🛡️ **Zero Runtime Dependencies**: Pure ES2022 modules, single-file canvas rendering, local storage persistence, and full offline functionality.
+* 🛡️ **Zero Runtime Dependencies**: Pure ES2022 modules, single-file canvas rendering, local storage persistence, and full offline functionality for single-player.
 
 ---
 
@@ -65,15 +68,15 @@ Players compete through a tiered ranked ladder inspired by **Valorant**, earning
 
 <div align="center">
 
-| In-Game Precision Aiming & HUD | Interactive Vector Guide |
+| In-Game Precision Aiming & HUD | Interactive Vector Guide & Sandbox |
 | :---: | :---: |
 | <img src="assets/screenshots/gameplay.png" alt="Gameplay HUD and Arena" width="440" /> | <img src="assets/screenshots/guide.png" alt="Interactive How-to-Play Guide" width="440" /> |
-| *8-ball pool specular aim trajectory with live try budget and par* | *Interactive multi-tab modal with kinetic vector line-art* |
+| *8-ball pool specular aim trajectory with live try budget and par* | *Interactive multi-tab modal with kinetic vector line-art & practice tools* |
 
 | Competitive Ranked Career Profile | Responsive Mobile & Touch Play |
 | :---: | :---: |
 | <img src="assets/screenshots/career_stats.png" alt="Valorant Career Profile" width="440" /> | <img src="assets/screenshots/mobile.png" alt="Mobile Viewport" width="440" /> |
-| *Valorant rank emblems, division RR gauge, ELO tracking & match history* | *Responsive touch slingshot interface optimized for mobile* |
+| *Valorant rank emblems, division RR gauge, ELO tracking & match history* | *Responsive touch slingshot interface optimized for mobile viewports* |
 
 </div>
 
@@ -86,16 +89,42 @@ Pulling back on the puck casts a ray along your launch vector, calculating:
 * Direct distance and power indicator with calibrated dead-zones.
 * The exact point of first impact with any wall geometry.
 * The specular reflection angle calculated via $\vec{v}' = \vec{v} - 2(\vec{v} \cdot \hat{n})\hat{n}$.
+* Traversal through glowing portals with split-vector exit ray trajectories.
 * A trailing dotted trajectory that automatically truncates on goal capture or material boundaries.
 
-### 2. Reactive Surface Materials
-Different room walls feature distinct physical and behavioral properties:
-| Material | Restitution | Behavior | Visual Indicator |
+### 2. Reactive Surface Materials & Cosmic Hazards
+| Material / Element | Restitution | Behavior | Visual Indicator |
 | :--- | :---: | :--- | :--- |
 | **Solid Wall** | `0.80` (80%) | Standard firm reflection; foundational puzzle surface. | High-contrast bone stroke (`#E9E6DF`) |
 | **Rubber Wall** | `0.98` (98%) | Hyper-elastic rebound; preserves almost all kinetic energy. | Vibrant cyan glow (`#4DD0E1`) |
-| **Glass Wall** | `0.70` (70%) | Brittle; shatters on high-speed impact (>650 px/s), opening new routes. | Frosted line-art (`#80CBC4`) |
-| **Hazard Barrier**| `0.00` (0%) | Instantly consumes the shot and resets puck to origin. | Hazard red / warning amber (`#FF5252`) |
+| **Glass Wall** | `0.70` (70%) | Brittle; shatters on high-speed impact (>650 px/s), opening routes. | Frosted line-art (`#80CBC4`) |
+| **Moving Wall** | `0.80` (80%) | Oscillates on linear trajectories with continuous swept motion. | Dynamic velocity arrows & trail |
+| **Bumper** | `1.25` (125%) | Hyper-elastic circular boost pin applying positive normal kick. | Pulsing solar amber rings |
+| **Portal Gate** | Pass-through | Teleports puck instantaneously, redirecting velocity vector. | Dual cyan/blue glowing ellipses (Linear, Orbital, Lissajous) |
+| **Gravity Well** | Gravitational | Pulls or repels puck trajectory with bounded $1/r^2$ force curves. | Swirling magenta accretion disk |
+| **Hazard Barrier** | `0.00` (0%) | Instantly consumes the shot and resets puck to origin. | Hazard red / warning amber (`#FF5252`) |
+
+---
+
+## 🏎️ Multiplayer Online Race to Level 100
+
+Bankshot includes a competitive real-time multiplayer race mode where up to 8 players compete head-to-head to clear 100 procedural rooms first.
+
+### Architecture & Network Stack
+* **Authoritative Server Verification**: The Node.js race server (`server/race-server.mjs`) deterministically simulates and validates the full physics replay of each claimed room clear before awarding advancement. Forged completions and out-of-order claims are rejected instantly.
+* **10-Byte Delta Telemetry**: During flight, clients broadcast ultra-compact 10-byte binary packets encoding quantized position `(x, y)`, velocity `(vx, vy)`, shot sequence ID, and high-resolution server timestamp.
+* **Hermite Ghost Interpolation**: Opponents appear as ethereal ghost pucks rendered via cubic Hermite spline extrapolation. Teleportation jumps through portals and room transitions automatically break spline interpolation to eliminate visual warping.
+* **Synchronized Seeded Progression**: All racers in a room share an identical procedural seed, guaranteeing equal geometric puzzle layouts.
+* **Lobby & Rematch Lifecycle**: Real-time room creation, join codes, player ready toggles, countdown synchronization, live rank leaderboards, and instant post-match rematches.
+
+Start the local relay alongside Vite, then open **Race to 100**. Create a room and share its code, or enter a code to join. The browser connects to the relay automatically.
+```bash
+npm run server
+```
+
+`npm run build` creates the single-file client. The race server serves that build at `/` when `dist/index.html` exists, with the relay at `/relay` and profile API at `/profile`. The local CLI saves profiles in `data/profiles.json`. Set `BANKSHOT_PROFILE_FILE` to use another path.
+
+The repository includes a Render Blueprint for hosting the client and relay together. If you host the client separately on Vercel, set `VITE_BANKSHOT_RELAY_URL` to the WebSocket URL of your deployed relay before building, for example `wss://your-relay.example/relay`. `window.BANKSHOT_RELAY_URL` set before the app loads overrides the build configuration. The default uses port 8787 on local HTTP and same-origin `/relay` elsewhere. The lobby never asks players for a server address. [Render Blueprint reference](https://render.com/docs/blueprint-spec)
 
 ---
 
@@ -157,25 +186,31 @@ Motion ceases completely when $\|\vec{V}\| < v_{\text{stop}}$ ($1.5\text{ px/s}$
 
 ---
 
-## 🎲 Procedural Level Generation
+## 🎲 Procedural Level Generation & Spatial Clearance Engine
 
-Every room in Bankshot is generated on-demand using a deterministic seeded pseudo-random number generator:
+Every room in Bankshot is synthesized dynamically using 4 procedural geometric archetypes coupled with an automated spatial validation engine:
 
 ```mermaid
 flowchart TD
-    A["Room Index (1..N)"] --> B["Compute Difficulty Curve (Rooms 1-100+)"]
-    B --> C["Seed PRNG with User Seed + Room ID"]
-    C --> D["Synthesize Arena Hull & Obstacle Geometry"]
-    D --> E["Place Puck & Goal Geometry"]
-    E --> F["Run Headless Virtual Physics Solver"]
-    F --> G{"Is Solution Verified Under Par?"}
-    G -- No --> H["Regenerate with Relaxed Geometry"]
-    H --> F
-    G -- Yes --> I["Finalize Room Geometry & Compute Par"]
+    A["Room Index (1..100+) + User Seed"] --> B["Select Geometric Archetype (0..3)"]
+    B --> C["Compute Flank Boundaries & Corridor Reservation"]
+    C --> D["Inject Moving Portals, Wells, Bumpers, Walls"]
+    D --> E["ClearanceEngine Swept Envelope & Spacing Validation"]
+    E -- Collision Found --> F["Retry with Alternate Candidate Coordinates"]
+    F --> E
+    E -- Clear --> G["Run Virtual Headless Physics Replay Solver"]
+    G -- Unsolved --> H["Fallback Corridor Adjustment"]
+    H --> G
+    G -- Verified Solvable --> I["Finalize Room Geometry & Compute Par"]
 ```
 
-1. **Scalable Difficulty**: Obstacle density, wall counts, rubber segments, glass barriers, and hazards scale progressively across 5 distinct thematic chapters.
-2. **Generate-and-Verify Solver**: A virtual physics simulation fires candidate trajectories across a 48-ray radial pattern, tracing reflections and validating that a clean geometric solution exists before the room is presented.
+1. **4 Geometric Archetypes**:
+   * *Archetype 0*: Bottom-Left $\to$ Top-Right (Bank Top)
+   * *Archetype 1*: Bottom-Right $\to$ Top-Left (Bank Top Invert)
+   * *Archetype 2*: Top-Left $\to$ Bottom-Right (Bank Bottom)
+   * *Archetype 3*: Top-Right $\to$ Bottom-Left (Bank Bottom Invert)
+2. **ClearanceEngine (`src/clearance.js`)**: Evaluates pairwise edge distances and swept motion envelopes across spawns, goals, portals, gravity wells, bumpers, moving walls, and interior barriers to guarantee 0 overlapping geometry.
+3. **Corridor Reservation**: Responds dynamically to the intended primary reflection line to ensure that obstacles enrich puzzle complexity without blocking fair paths.
 
 ---
 
@@ -222,44 +257,47 @@ python3 -m http.server 8000
 ```
 Then navigate to `http://localhost:8000` in your browser.
 
-### Option 2: Node.js (npx serve)
-```bash
-npx serve .
-```
-
-### Option 3: Modern Vite Development
+### Option 2: Modern Vite Development
 ```bash
 npm install
 npm run dev
+```
+
+### Option 3: Dedicated Multiplayer Race Server
+```bash
+npm run server
 ```
 
 ---
 
 ## 🧪 Testing & Quality Assurance
 
-Bankshot includes comprehensive automated test coverage spanning mathematical unit tests and end-to-end browser automation.
+Bankshot includes comprehensive automated test coverage spanning mathematical unit tests, procedural clearance audits, multiplayer network simulations, and end-to-end browser automation.
 
-### Unit & Physics Test Suite
-Run the 47 unit and system tests with Node's native test runner:
+### Unit, Generator & Network Test Suite
+Run the 91 unit, system, and network tests with Node's native test runner:
 ```bash
 npm test
 ```
 The suite verifies:
 * Swept capsule geometry, endpoint normal accuracy, and continuous crossing detection.
-* Solvability of seeded rooms and procedural difficulty scaling.
-* Material restitution accuracy (solid 80%, rubber 98%, glass threshold breaking).
-* `2 RR = 1 ELO` ranked mechanics, promotion thresholds, demotion shields, and database persistence.
-* Retroactive migration of historical player progress.
+* Solvability and 0 clearance violations across 1,000 consecutively seeded procedural rooms.
+* Reactive materials (solid, rubber, glass threshold shattering, hazards).
+* `2 RR = 1 ELO` ranked mechanics, promotion fanfare, demotion shields, and database persistence.
+* 8-player network synchronization, delta-compression, anti-cheat replay verification, and rematch queues.
 
 ### Browser Acceptance Suite
 Run the Playwright end-to-end acceptance suite:
 ```bash
 npm run test:browser
+npm run test:ui-browser
+npm run test:race-browser
 ```
 Automated browser checks verify:
 * 14 consecutive rooms physically cleared using simulated pointer drag vectors.
 * Touch input simulation and mobile slingshot mechanics.
 * Virtual scrolling DOM virtualization past room 1,200.
+* Multi-client real-time race synchronization and pointer clearances in headless Chrome.
 * High-DPI DPR canvas scaling and zero console errors.
 
 ---
@@ -275,25 +313,38 @@ bankshot/
 │       ├── guide.png        # Interactive How-to-Play modal
 │       ├── career_stats.png # Valorant rank profile & ELO
 │       └── mobile.png       # Responsive mobile view
+├── server/
+│   └── race-server.mjs      # Authoritative WebSocket multiplayer race server
 ├── src/
 │   ├── config.js            # Physics constants, colors, timing tokens
+│   ├── clearance.js         # Spatial clearance engine & swept motion envelopes
 │   ├── generator.js         # Procedural level synthesis & verification solver
 │   ├── input.js             # Mouse, touch, keyboard unified input manager
+│   ├── levels.js            # Authored tutorial rooms & milestone definitions
 │   ├── main.js              # Game loop, screen router, accumulator orchestration
 │   ├── physics.js           # 120Hz fixed-step swept-capsule collision engine
 │   ├── render.js            # 2D Canvas renderer, aim projections, visual effects
+│   ├── sandbox.js           # Interactive vector practice sandbox & placement tool
 │   ├── state.js             # Unified localStorage DB, ELO & RR ranked ladder
-│   ├── ui.js                # DOM screens, How-To-Play guide, career profile
+│   ├── ui.js                # DOM screens, How-To-Play guide, career profile, race UI
+│   ├── network/
+│   │   ├── client.js        # Race client & binary WebSocket packet handler
+│   │   ├── ghost.js         # Hermite cubic spline extrapolation for opponents
+│   │   └── protocol.js      # 10-byte binary telemetry codec & packet types
 │   └── styles/
 │       ├── tokens.css       # Design tokens, palette, typography, chamfers
 │       └── ui.css           # Modal styling, HUD, career stats, animations
 ├── tests/
 │   ├── aim.test.mjs         # Aim trajectory unit tests
 │   ├── browser.test.mjs     # Playwright E2E browser acceptance test suite
-│   ├── generator.test.mjs   # Procedural solvability tests
+│   ├── generator.test.mjs   # Procedural solvability & 1,000-room clearance audit
 │   ├── input.test.mjs       # Input manager tests
+│   ├── mechanics.test.mjs   # Bumpers, gravity wells, moving portals, hazards tests
+│   ├── network.test.mjs     # Server replay verification & 8-racer sync tests
+│   ├── network-browser.mjs  # Multi-client headless browser race test
 │   ├── physics.test.mjs     # Continuous collision physics tests
-│   └── state.test.mjs       # ELO, RR, and persistence tests
+│   ├── state.test.mjs       # ELO, RR, and persistence tests
+│   └── ui-browser.test.mjs  # Cross-tab storage sync & sandbox placement tests
 ├── index.html               # Main entry HTML
 ├── package.json             # Scripts & devDependencies
 ├── tsconfig.json            # TypeScript / JSDoc configuration
@@ -310,7 +361,7 @@ To compile Bankshot into a standalone, ultra-portable **single-file HTML bundle*
 npm run build
 ```
 
-The resulting `dist/index.html` (~109 KB uncompressed, ~31 KB gzipped) can be distributed or hosted on GitHub Pages, Netlify, Vercel, or even opened directly from a local file without a server.
+The resulting `dist/index.html` (~177 KB uncompressed, ~52 KB gzipped) can be distributed or hosted on GitHub Pages, Netlify, Vercel, or opened directly from a local file without a server.
 
 ---
 
@@ -323,4 +374,3 @@ This project is licensed under the [MIT License](LICENSE) — free to use, modif
 <div align="center">
 <sub>Crafted with geometric precision by <b>xgoat.tbh</b>. Find your angle.</sub>
 </div>
-

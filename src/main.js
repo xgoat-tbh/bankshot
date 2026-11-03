@@ -1,14 +1,25 @@
 import { CONFIG } from './config.js';
 import { createWorld, stepWorld } from './physics.js';
-import { createRoomProvider } from './generator.js';
+import { createCampaignProvider } from './generator.js';
 import { Renderer } from './render.js';
 import { Input } from './input.js';
 import { UI } from './ui.js';
 import { safeStore } from './state.js';
+import { mountRace } from './network/race-ui.js';
+import { resolveRelayUrl } from './network/relay.js';
+import { createProfileService } from './profile.js';
 
 export function mountGame(root) {
   const store = safeStore();
-  const getRoom = createRoomProvider(store.data.userSeed, 32);
+  let campaignSeed = store.data.userSeed;
+  let campaignRooms = createCampaignProvider(campaignSeed, 32);
+  const getRoom = index => {
+    if (campaignSeed !== store.data.userSeed) {
+      campaignSeed = store.data.userSeed;
+      campaignRooms = createCampaignProvider(campaignSeed, 32);
+    }
+    return campaignRooms(index);
+  };
   const media = window.matchMedia('(prefers-reduced-motion: reduce)');
   const settings = { reducedMotion: false, aimPreview: true };
   const chaptersSeen = new Set();
@@ -22,6 +33,9 @@ export function mountGame(root) {
   let frameId = 0;
   let destroyed = false;
   let transition = 0;
+  let closeRace = null;
+  let profile;
+  let unsubscribeProfile;
   const abort = new AbortController();
 
   const ui = new UI(root, getRoom, store, action);
@@ -31,6 +45,56 @@ export function mountGame(root) {
     kind: kind => ui.setInput(kind),
     shot: () => { store.recordShot(); ui.update(world, input); },
   });
+  function getProfile() {
+    if (!profile) {
+      profile = createProfileService({
+        relayUrl: resolveRelayUrl,
+        campaign: () => store.data,
+        onCampaign: snapshot => store.importProfileCampaign(snapshot),
+      });
+      unsubscribeProfile = profile.subscribe(snapshot => {
+        if (phase === 'profile') ui.renderProfile(snapshot);
+      });
+      profile.ready.catch(error => {
+        if (!destroyed && phase === 'profile') ui.profileNotice(error.message || 'PROFILE UNAVAILABLE');
+      });
+    }
+    return profile;
+  }
+  async function profileAction(name) {
+    const service = getProfile();
+    const callsign = root.querySelector('[data-profile-callsign]');
+    const recovery = root.querySelector('[data-profile-recovery]');
+    try {
+      await service.ready;
+      if (destroyed || phase !== 'profile') return;
+      if (name === 'profile-copy' || name === 'profile-export') {
+        const token = name === 'profile-copy' ? service.snapshot.agentToken : service.exportToken();
+        try {
+          await navigator.clipboard.writeText(token);
+          ui.profileNotice(name === 'profile-copy' ? 'AGENT TOKEN COPIED' : 'RECOVERY CODE COPIED');
+        } catch {
+          root.querySelector('.profile-recovery').open = true;
+          recovery.value = token;
+          recovery.focus(); recovery.select();
+          ui.profileNotice('COPY THE SELECTED TEXT');
+        }
+      } else if (name === 'profile-rename') {
+        await service.rename(callsign.value);
+        delete callsign.dataset.edited;
+        callsign.value = service.snapshot.callsign;
+        ui.profileNotice('CALL-SIGN SAVED');
+      } else if (name === 'profile-recover') {
+        const restored = await service.recover(recovery.value);
+        recovery.value = '';
+        delete callsign.dataset.edited;
+        ui.renderProfile(service.snapshot);
+        ui.profileNotice(restored.status === 'online' ? 'PROFILE RESTORED' : 'RECOVERY CODE SAVED / CONNECT TO RESTORE PROGRESS');
+      }
+    } catch (error) {
+      ui.profileNotice(error.message || 'PROFILE ACTION FAILED');
+    }
+  }
   updateSettings();
   renderer.setWorld(renderer.titleWorld, 'title', performance.now() / 1000);
   if (window.matchMedia('(pointer: coarse)').matches) input.setKind('touch');
@@ -48,16 +112,20 @@ export function mountGame(root) {
   function resetClock() { accumulator = 0; lastTime = 0; }
   function abandonAttempt(force = false) {
     if (world && world.shots > 0 && world.status !== 'won' && !world.abandoned) {
-      if (force || world.shots > 0) {
+      if (force || world.shots >= world.budget) {
         store.recordFailure(levelIndex);
         world.abandoned = true;
+      } else {
+        store.data.activeAttempt = null;
+        store.save();
       }
     }
   }
-  async function startLevel(index, outcome = '') {
+  async function startLevel(index, outcome = '', retry = false) {
     if (!store.canPlay(index)) return;
     const token = ++transition;
-    abandonAttempt(outcome === 'budget' || (index !== levelIndex));
+    if (retry) store.data.activeAttempt = null;
+    else abandonAttempt(outcome === 'budget' || outcome === 'hazard' || (index !== levelIndex));
     input.enabled = false;
     input.reset();
     levelIndex = index;
@@ -86,8 +154,8 @@ export function mountGame(root) {
     if (document.hidden) pause();
   }
   function restart() {
-    if (!world || ['intro', 'chapter', 'guide'].includes(phase)) return;
-    startLevel(levelIndex);
+    if (!world || !['game', 'pause', 'result'].includes(phase)) return;
+    startLevel(levelIndex, '', true);
   }
   function title() {
     ++transition;
@@ -121,7 +189,7 @@ export function mountGame(root) {
     if (phase === 'guide') closeGuide();
     else if (phase === 'game') pause();
     else if (phase === 'pause') resume();
-    else if (['settings', 'levels', 'stats'].includes(phase)) back();
+    else if (['settings', 'levels', 'stats', 'profile'].includes(phase)) back();
     else if (phase === 'result') showScreen('levels');
   }
   function openGuide() {
@@ -162,11 +230,27 @@ export function mountGame(root) {
   }
   function action(name, data = {}) {
     if (phase === 'intro') return;
-    if (name === 'play') startLevel(store.data.currentLevel);
+    if (name === 'race') {
+      input.enabled = false;
+      input.cancel();
+      const previousPhase = phase;
+      phase = 'race';
+      resetClock();
+      closeRace = mountRace(root, { profile: getProfile(), onExit: () => { closeRace = null; phase = previousPhase; resetClock(); input.enabled = phase === 'game'; } });
+    }
+    else if (name === 'play') startLevel(store.data.currentLevel);
     else if (name === 'level') startLevel(Number(data.index));
     else if (name === 'title') title();
     else if (name === 'home') { if (phase === 'game') pause(); else title(); }
     else if (['levels', 'settings', 'stats'].includes(name)) showScreen(name);
+    else if (name === 'profile') {
+      showScreen('profile');
+      const existing = !!profile;
+      const service = getProfile();
+      ui.renderProfile(service.snapshot);
+      if (existing) service.refresh().catch(() => {});
+    }
+    else if (name.startsWith('profile-') && phase === 'profile') profileAction(name);
     else if (name === 'setting') { store.toggle(data.key); updateSettings(); }
     else if (name === 'setting-value') { store.setSetting(data.key, data.key === "touchSensitivity" ? Number(data.value) : data.value); updateSettings(); }
     else if (name === 'back') back();
@@ -183,6 +267,7 @@ export function mountGame(root) {
     input.enabled = false;
     input.cancel();
     const grade = store.recordSuccess(world.level, world.shots, world.shots, world.budget, world.time, store.data.currentFailStreak === 0);
+    if (profile) profile.ready.then(() => profile.refresh()).catch(() => {});
     ui.update(world, input);
     const rankInfo = store.getRankInfo();
     if (rankInfo.justPromoted) { phase = 'promotion'; await ui.showPromotion(rankInfo); }
@@ -207,7 +292,7 @@ export function mountGame(root) {
       }
       ui.update(world, input);
     }
-    if (!['levels', 'settings', 'stats'].includes(phase)) renderer.draw(now, phase === 'game' ? accumulator / CONFIG.physics.step : 1, input, settings);
+    if (!['levels', 'settings', 'stats', 'profile'].includes(phase)) renderer.draw(now, phase === 'game' ? accumulator / CONFIG.physics.step : 1, input, settings);
     frameId = requestAnimationFrame(frame);
   }
   function visibility() {
@@ -228,6 +313,10 @@ export function mountGame(root) {
   media.addEventListener('change', updateSettings, { signal: abort.signal });
   window.addEventListener('resize', resize, { signal: abort.signal });
   const observer = new ResizeObserver(resize);
+  const unsubscribe = store.subscribe?.(() => {
+    updateSettings();
+    if (phase === 'levels' || phase === 'stats') ui.show(phase);
+  });
   observer.observe(root);
   frameId = requestAnimationFrame(frame);
   ui.startIntro().then(() => {
@@ -244,6 +333,11 @@ export function mountGame(root) {
     abort.abort();
     input.destroy();
     ui.destroy();
+    closeRace?.();
+    unsubscribe?.();
+    unsubscribeProfile?.();
+    profile?.destroy();
+    store.destroy?.();
   };
 }
 if (typeof document !== 'undefined') {

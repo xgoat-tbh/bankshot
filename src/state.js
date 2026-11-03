@@ -18,6 +18,7 @@ export const TIER_COLORS = {
 const positive = n => Number.isSafeInteger(n) && n > 0;
 const count = n => Number.isSafeInteger(n) && n >= 0 ? n : 0;
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
+const validSeed = value => typeof value === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(value);
 const uuid = () => globalThis.crypto?.randomUUID?.() ?? 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const n = Math.random() * 16 | 0; return (c === 'x' ? n : (n & 3) | 8).toString(16); });
 
 export function getRankFromIndex(index) {
@@ -67,6 +68,8 @@ export function calculateRank(shots, par) {
 export const rank = calculateRank;
 
 export function createStore(storage) {
+  const writer = uuid();
+  const subscribers = new Set();
   let available = true;
   if (arguments.length === 0) {
     try { storage = globalThis.localStorage; } catch { available = false; }
@@ -102,17 +105,16 @@ export function createStore(storage) {
   if (['system','on','off'].includes(settings?.reducedMotionMode)) data.settings.reducedMotionMode = settings.reducedMotionMode;
   else if (settings?.reducedMotion === true) data.settings.reducedMotionMode = 'on';
   if (source) {
-    if (typeof source.userSeed === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(source.userSeed)) data.userSeed = source.userSeed;
+    if (validSeed(source.userSeed)) data.userSeed = source.userSeed;
     data.seenGuide = source.seenGuide === true;
     if (object(source.levelRecords)) {
       const indices = Object.keys(source.levelRecords).map(Number).filter(positive).sort((a,b) => a-b);
       for (const index of indices) {
-        if (index !== data.maxUnlocked) break;
         const record = source.levelRecords[index];
-        if (!object(record) || !positive(record.bestShots) || !positive(record.par) || !GRADES.includes(record.rank ?? record.bestRank)) break;
+        if (!object(record) || !positive(record.bestShots) || !positive(record.par) || !GRADES.includes(record.rank ?? record.bestRank)) continue;
         data.levelRecords[index] = { bestShots: record.bestShots, rank: record.rank ?? record.bestRank, bestRank: record.rank ?? record.bestRank, clearedAt: count(record.clearedAt), par: record.par, completions: Math.max(1,count(record.completions)) };
-        data.maxUnlocked = Math.min(Number.MAX_SAFE_INTEGER, index + 1);
       }
+      advanceUnlocked();
     }
     data.currentLevel = positive(source.currentLevel) ? Math.min(source.currentLevel,data.maxUnlocked) : 1;
     if (object(source.roomFailures)) for (const [key,value] of Object.entries(source.roomFailures)) {
@@ -137,6 +139,7 @@ export function createStore(storage) {
   let promotedTier = null;
   const convergence = () => clamp(1+(data.mmr-data.elo)/100,0.6,1.4);
   function applyElo(deltaElo, room, outcome, shots, par, roomTime = null) {
+    data.rankUpdatedAt = Math.max(Date.now(), (data.rankUpdatedAt ?? 0) + 1);
     const oldElo = data.elo;
     const oldTier = getRankFromElo(oldElo).tierIndex;
     const floor = oldTier*50;
@@ -168,32 +171,107 @@ export function createStore(storage) {
     for (const grade of GRADES) data.stats[`${grade.toLowerCase()}Ranks`] = 0;
     for (const record of Object.values(data.levelRecords)) data.stats[`${record.bestRank.toLowerCase()}Ranks`]++;
   }
+  function advanceUnlocked() {
+    while (data.maxUnlocked < Number.MAX_SAFE_INTEGER && data.levelRecords[data.maxUnlocked]) data.maxUnlocked++;
+  }
+  data.shotCounters = object(source?.shotCounters) ? Object.fromEntries(Object.entries(source.shotCounters).filter(([key,value]) => typeof key === 'string' && count(value) === value)) : { legacy: data.stats.totalShotsFired };
+  let lastSnapshot = '';
+  function mergeProgress(remote, settings = false) {
+    if (!object(remote) || remote.version !== 3 || remote.userSeed !== data.userSeed) return;
+    for (const [key, record] of Object.entries(remote.levelRecords ?? {})) {
+      if (!positive(+key) || !object(record) || !positive(record.bestShots) || !positive(record.par) || !GRADES.includes(record.bestRank ?? record.rank)) continue;
+      const previous = data.levelRecords[key];
+      const bestRank = record.bestRank ?? record.rank;
+      if (!previous) data.levelRecords[key] = { ...record, bestRank, rank: bestRank, completions: Math.max(1,count(record.completions)) };
+      else {
+        previous.bestShots = Math.min(previous.bestShots, record.bestShots);
+        if (GRADES.indexOf(bestRank) < GRADES.indexOf(previous.bestRank)) previous.rank = previous.bestRank = bestRank;
+        previous.completions = Math.max(previous.completions, count(record.completions));
+      }
+    }
+    if (object(remote.shotCounters)) {
+      for (const [key, value] of Object.entries(remote.shotCounters)) if (count(value) === value) data.shotCounters[key] = Math.max(data.shotCounters[key] ?? 0, value);
+    } else data.shotCounters.legacy = Math.max(data.shotCounters.legacy ?? 0, count(remote.stats?.totalShotsFired));
+    if (count(remote.rankUpdatedAt) > (data.rankUpdatedAt ?? 0)) {
+      data.rankUpdatedAt = remote.rankUpdatedAt;
+      data.elo = count(remote.elo); data.mmr = count(remote.mmr);
+      data.winStreak = count(remote.winStreak); data.lossStreak = count(remote.lossStreak);
+      const info = getRankFromElo(data.elo);
+      Object.assign(data.rank, {elo:data.elo,tierIndex:info.tierIndex,rr:info.rr,peakElo:Math.max(data.rank.peakElo,count(remote.rank?.peakElo)),peakIndex:Math.max(data.rank.peakIndex,count(remote.rank?.peakIndex))});
+      if (Array.isArray(remote.rank?.matchHistory)) data.rank.matchHistory = remote.rank.matchHistory.filter(m=>object(m)&&['win','fail'].includes(m.outcome)&&positive(m.room)&&typeof m.deltaElo==='string'&&/^[+-]?\d+$/.test(m.deltaElo)).slice(0,8);
+    }
+    data.stats.totalShotsFired = Object.values(data.shotCounters).reduce((sum, value) => sum + value, 0);
+    if (settings && object(remote.settings)) {
+      for (const key of ['aimPreview','highDpi','reducedMotion']) if (typeof remote.settings[key] === 'boolean') data.settings[key] = remote.settings[key];
+      if (['system','on','off'].includes(remote.settings.reducedMotionMode)) data.settings.reducedMotionMode = remote.settings.reducedMotionMode;
+      if (remote.settings.touchSensitivity >= 0.5 && remote.settings.touchSensitivity <= 2) data.settings.touchSensitivity = remote.settings.touchSensitivity;
+    }
+    advanceUnlocked(); refresh();
+  }
+  function sync() {
+    const remote = read(KEY);
+    const before = JSON.stringify(data);
+    mergeProgress(remote, true);
+    if (before !== JSON.stringify(data)) for (const listener of subscribers) listener(data);
+    return true;
+  }
   function save() {
-    try { storage.setItem(KEY, JSON.stringify(data)); available = true; return true; }
+    mergeProgress(read(KEY));
+    try { lastSnapshot = JSON.stringify(data); storage.setItem(KEY, lastSnapshot); available = true; return true; }
     catch { available = false; return false; }
   }
   const canPlay = index => positive(index) && index <= data.maxUnlocked;
-  if (data.activeAttempt) fail(data.activeAttempt.room);
+  // A reload or browser shutdown is not an explicit failed attempt. The world
+  // restarts on load, but recorded shots and earned rating remain intact.
+  data.activeAttempt = null;
   refresh(); save();
+  const onStorage = event => { if (event.key === KEY && event.newValue !== lastSnapshot && (!event.storageArea || event.storageArea === storage)) sync(); };
+  globalThis.window?.addEventListener?.('storage', onStorage);
   return {
     data,
     get available() { return available; },
-    save, canPlay,
+    save, canPlay, sync,
+    importProfileCampaign(campaign) {
+      if (!object(campaign) || !validSeed(campaign.userSeed)) return false;
+      const before = JSON.stringify(data);
+      const seedChanged = campaign.userSeed !== data.userSeed;
+      const newerRating = count(campaign.rankUpdatedAt) > count(data.rankUpdatedAt);
+      data.userSeed = campaign.userSeed;
+      mergeProgress({ ...campaign, version: 3 });
+      data.stats.completedPar = Math.max(data.stats.completedPar, count(campaign.stats?.completedPar));
+      if ((newerRating || seedChanged) && Array.isArray(campaign.stats?.recentShots)) {
+        data.stats.recentShots = campaign.stats.recentShots.filter(n => Number.isFinite(n) && n > 0).slice(-10);
+      }
+      const peak = Math.max(data.rank.peakElo, count(campaign.rank?.peakElo));
+      data.rank.peakElo = peak;
+      data.rank.peakIndex = getRankFromElo(peak).tierIndex;
+      if (seedChanged && canPlay(campaign.currentLevel)) data.currentLevel = campaign.currentLevel;
+      if (before !== JSON.stringify(data)) {
+        refresh(); save();
+        for (const listener of subscribers) listener(data);
+      }
+      return true;
+    },
+    subscribe(listener) { subscribers.add(listener); return () => subscribers.delete(listener); },
+    destroy() { subscribers.clear(); globalThis.window?.removeEventListener?.('storage', onStorage); },
     unlocked: () => data.maxUnlocked,
     select(index) { if (!canPlay(index)) return false; data.currentLevel = index; refresh(); save(); return true; },
     calculateBudget(index, par) { return calculateTriesBudget(par, data.stats.recentShots, data.roomFailures[index] ?? 0); },
     recordShot() {
+      data.shotCounters[writer] = (data.shotCounters[writer] ?? 0) + 1;
       data.stats.totalShotsFired++;
       if(data.activeAttempt && data.activeAttempt.room !== data.currentLevel) fail(data.activeAttempt.room);
       data.activeAttempt = {room:data.currentLevel,shots:(data.activeAttempt?.shots??0)+1};
       save();
     },
     recordFailure(index = data.currentLevel) {
+      sync();
       if (!canPlay(index)) return false;
       fail(index);
       refresh(); save(); return true;
     },
     recordSuccess(level, shots, triesUsed = shots, maxTries, roomTime = Infinity, isFirstAttempt = true) {
+      sync();
       const index = typeof level === 'number' ? level : level?.id;
       const par = typeof level === 'number' ? (data.levelRecords[index]?.par ?? 1) : level?.par;
       if (!canPlay(index) || !positive(par) || !positive(shots) || !positive(triesUsed)) return false;
@@ -207,6 +285,7 @@ export function createStore(storage) {
       data.levelRecords[index].rank = data.levelRecords[index].bestRank;
       data.levelRecords[index].clearedAt = Date.now();
       data.maxUnlocked = Math.max(data.maxUnlocked, Math.min(Number.MAX_SAFE_INTEGER,index+1));
+      advanceUnlocked();
       data.currentLevel = Math.min(Number.MAX_SAFE_INTEGER,index+1);
       
       const base = {S:9,A:6,B:4,C:2,D:1}[grade];

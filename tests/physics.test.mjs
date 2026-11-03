@@ -13,6 +13,87 @@ const fixture = (walls = [], extras = {}) => ({
 });
 const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < CONFIG.tests.tolerance, `${actual} != ${expected}`);
 
+const portalPair = (extras = {}) => ({
+  A: { x: 160, y: 400, nx: -1, ny: 0, radius: 20 },
+  B: { x: 700, y: 400, nx: 1, ny: 0, radius: 20 }, ...extras,
+});
+
+test('freestanding portals accept front, back, side, and puck-rim contacts', () => {
+  for (const [puck, angle] of [[[100, 400], 0], [[220, 400], Math.PI], [[160, 340], Math.PI / 2], [[100, 428], 0]]) {
+    const world = createWorld(fixture([], { puck, portals: [portalPair()] }));
+    launch(world, angle, 0.5);
+    for (let i = 0; i < 20; i++) stepWorld(world);
+    assert.equal(world.teleports, 1, `entry ${puck}`);
+  }
+});
+
+test('inactive portals neither teleport nor start a cooldown', () => {
+  const world = createWorld(fixture([], { portals: [portalPair({ active: false })] }));
+  launch(world, 0, 0.5);
+  for (let i = 0; i < 30; i++) stepWorld(world);
+  assert.equal(world.teleports, 0);
+  assert.equal(world.portals[0].cooldown, 0);
+});
+
+test('parallel portal frames preserve the tangential velocity component', () => {
+  const world = createWorld(fixture([], { puck: [125, 385], portals: [portalPair({ B: { x: 700, y: 400, nx: -1, ny: 0, radius: 20 } })] }));
+  launch(world, Math.PI / 6, 0.5);
+  for (let i = 0; i < 10 && !world.teleports; i++) stepWorld(world);
+  assert.equal(world.teleports, 1);
+  assert.ok(world.vx < 0 && world.vy > 0);
+  close(Math.abs(world.vy / world.vx), Math.tan(Math.PI / 6));
+});
+
+test('portal cooldown is tunable and blocked exits cannot embed the puck', () => {
+  const original = CONFIG.physics.portals?.cooldown;
+  assert.ok(CONFIG.physics.portals, 'portal tuning exists');
+  try {
+    CONFIG.physics.portals.cooldown = 0.4;
+    const world = createWorld(fixture([wall([735, 380], [735, 420])], { portals: [portalPair()] }));
+    launch(world, 0, 0.5);
+    for (let i = 0; i < 30 && !world.teleports; i++) stepWorld(world);
+    assert.equal(world.teleports, 1);
+    assert.equal(world.portals[0].cooldown, 0.4);
+    assert.ok(Math.abs(world.y - 400) > 34, 'exit shifted around the obstruction');
+    assert.ok(Number.isFinite(world.portals[0].hitAt));
+  } finally { CONFIG.physics.portals.cooldown = original; }
+});
+
+test('fully blocked portal exits stay non-traversable', () => {
+  const box = [[665, 365], [735, 365], [735, 435], [665, 435]];
+  const world = createWorld(fixture(box.map((p, i) => wall(p, box[(i + 1) % box.length])), { portals: [portalPair()] }));
+  launch(world, 0, 0.5);
+  for (let i = 0; i < 20; i++) stepWorld(world);
+  assert.equal(world.teleports, 0);
+  assert.ok(world.x < 300);
+});
+
+test('a grazing bumper boosts only normal momentum', () => {
+  const world = createWorld(fixture([], { puck: [126, 400], bumpers: [{ x: 160, y: 400, radius: 20, restitution: 1.25 }] }));
+  launch(world, Math.PI / 6, 0.5);
+  const tangential = world.vy * Math.exp(-CONFIG.physics.damping * CONFIG.physics.step);
+  stepWorld(world);
+  assert.equal(world.impacts, 1);
+  close(world.vy, tangential);
+});
+
+test('gravity acceleration is bounded even with extreme well strength', () => {
+  const world = createWorld(fixture([], { gravityWells: [{ x: 100, y: 410, radius: 100, strength: 1e9 }] }));
+  launch(world, 0, 0.1);
+  stepWorld(world);
+  assert.ok(Math.abs(world.vy) <= 1200 * CONFIG.physics.step);
+});
+
+test('large simulation steps agree with fixed substeps near gravity wells', () => {
+  const level = fixture([], { gravityWells: [{ x: 130, y: 440, radius: 160, strength: 1800 }] });
+  const slow = createWorld(level), fast = createWorld(level);
+  launch(slow, 0, 0.2); launch(fast, 0, 0.2);
+  for (let i = 0; i < 10; i++) stepWorld(slow, 1 / 30);
+  for (let i = 0; i < 80; i++) stepWorld(fast);
+  close(slow.x, fast.x); close(slow.y, fast.y);
+  close(slow.vx, fast.vx); close(slow.vy, fast.vy);
+});
+
 test('moving segment follows its oscillation and collides continuously', () => {
   const world = createWorld(fixture([], { movingWalls: [{ a: [120, 300], b: [120, 500], delta: [20, 0], freq: 1, phase: 0 }] }));
   launch(world, 0, 1);
@@ -177,7 +258,8 @@ test('all rooms contain maximum-speed launches across 48 directions', () => {
       let steps = 0;
       while (world.status === 'moving' && steps++ < CONFIG.tests.maxSteps) {
         stepWorld(world);
-        assert.ok(world.x >= 60 && world.x <= 1140 && world.y >= 60 && world.y <= 740, `Escaped level ${level.id} at angle ${angle}`);
+        const boundary = level.walls.slice(0, 8).flatMap(wall => [wall.a, wall.b]);
+        assert.ok(world.x >= Math.min(...boundary.map(p=>p[0])) && world.x <= Math.max(...boundary.map(p=>p[0])) && world.y >= Math.min(...boundary.map(p=>p[1])) && world.y <= Math.max(...boundary.map(p=>p[1])), `Escaped level ${level.id} at angle ${angle}`);
         assert.ok(Number.isFinite(world.x) && Number.isFinite(world.y));
       }
       assert.notEqual(world.status, 'moving');
